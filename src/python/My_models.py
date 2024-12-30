@@ -212,93 +212,84 @@ class CompenNetPlusplus(nn.Module):
         return x
 
 class ShadingNetSPAA(nn.Module):
-    # Extended from CompenNet
     def __init__(self, use_rough=True):
         super(ShadingNetSPAA, self).__init__()
         self.use_rough = use_rough
         self.name = self.__class__.__name__ if self.use_rough else self.__class__.__name__ + '_no_rough'
         self.relu = nn.ReLU()
 
-        # backbone branch
-        self.conv1 = nn.Conv2d(3  , 32 , 3, 2, 1)
-        self.conv2 = nn.Conv2d(32 , 64 , 3, 2, 1)
-        self.conv3 = nn.Conv2d(64 , 128, 3, 1, 1)
-        self.conv4 = nn.Conv2d(128, 256, 3, 1, 1)
-        self.conv5 = nn.Conv2d(256, 128, 3, 1, 1)
+        # Backbone branch (reduce downsampling to 1)
+        self.conv1 = nn.Conv2d(3, 64, 3, 2, 1)  # Combine conv1 and conv2
+        self.conv2 = nn.Conv2d(64, 128, 3, 1, 1)  # Keep conv3 unchanged
+        self.conv3 = nn.Conv2d(128, 256, 3, 1, 1)  # Keep conv4 unchanged
+        self.conv4 = nn.Conv2d(256, 128, 3, 1, 1)  # Same as conv5
 
-        # surface image feature extraction branch
+        # Surface feature extraction branch (adjust for reduced downsampling)
         num_chan = 6 if self.use_rough else 3
-        self.conv1_s = nn.Conv2d(num_chan, 32 , 3, 2, 1)
-        self.conv2_s = nn.Conv2d(32      , 64 , 3, 2, 1)
-        self.conv3_s = nn.Conv2d(64      , 128, 3, 1, 1)
-        self.conv4_s = nn.Conv2d(128     , 256, 3, 1, 1)
+        self.conv1_s = nn.Conv2d(num_chan, 64, 3, 2, 1)
+        self.conv2_s = nn.Conv2d(64, 128, 3, 1, 1)
+        self.conv3_s = nn.Conv2d(128, 256, 3, 1, 1)
 
-        # transposed conv
-        self.transConv1 = nn.ConvTranspose2d(128, 64, 3, 2, 1 , 1)
-        self.transConv2 = nn.ConvTranspose2d(64 , 32, 2, 2, 0)
-        self.conv6      = nn.Conv2d(32          , 3 , 3, 1, 1)
+        # Transposed convolution (reduce to 1 upsampling)
+        self.transConv1 = nn.ConvTranspose2d(128, 64, 3, 2, 1, 1)
+        self.conv6 = nn.Conv2d(64, 3, 3, 1, 1)
 
-        # skip layers
+        # Skip layers with attention mechanism
         self.skipConv1 = nn.Sequential(
             nn.Conv2d(3, 3, 1, 1, 0),
             self.relu,
             nn.Conv2d(3, 3, 3, 1, 1),
             self.relu,
             nn.Conv2d(3, 3, 3, 1, 1),
-            self.relu
+            self.relu,
+        )
+        self.skipConv2 = nn.Conv2d(64, 128, 1, 1, 0)
+
+        # Attention modules for skip connections
+        self.attention1 = self._channel_attention(128)
+        self.attention2 = self._channel_attention(128)
+
+        # Initialize weights
+        self._initialize_weights()
+
+    def _channel_attention(self, channels):
+        """Squeeze-and-Excitation attention block"""
+        return nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // 16, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // 16, channels, 1),
+            nn.Sigmoid(),
         )
 
-        self.skipConv2 = nn.Conv2d(32, 64, 1, 1, 0)
-        self.skipConv3 = nn.Conv2d(64, 128, 3, 1, 1)
-
-        # stores biases of surface feature branch (net simplification)
-        self.register_buffer('res1_s', None)
-        self.register_buffer('res2_s', None)
-        self.register_buffer('res3_s', None)
-        self.register_buffer('res4_s', None)
-
-        # initialization function, first checks the module type,
-        def _initialize_weights(m):
-            if type(m) == nn.Conv2d:
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
                 nn.init.kaiming_normal_(m.weight)
 
-        self.apply(_initialize_weights)
-
-    # simplify trained model by trimming surface branch to biases
-    def simplify(self, s):
-        self.res1_s = self.relu(self.conv1_s(s))
-        self.res2_s = self.relu(self.conv2_s(self.res1_s))
-        self.res3_s = self.relu(self.conv3_s(self.res2_s))
-        self.res4_s = self.relu(self.conv4_s(self.res3_s))
-
-        self.res1_s = self.res1_s.squeeze()
-        self.res2_s = self.res2_s.squeeze()
-        self.res3_s = self.res3_s.squeeze()
-        self.res4_s = self.res4_s.squeeze()
-
-    # x is the input uncompensated image, s is a 1x3x256x256 surface image
     def forward(self, x, *argv):
         s = torch.cat(argv, 1)
 
-        # surface feature extraction
-        res1_s = self.relu(self.conv1_s(s)) if self.res1_s is None else self.res1_s
-        res2_s = self.relu(self.conv2_s(res1_s)) if self.res2_s is None else self.res2_s
-        res3_s = self.relu(self.conv3_s(res2_s)) if self.res3_s is None else self.res3_s
-        res4_s = self.relu(self.conv4_s(res3_s)) if self.res4_s is None else self.res4_s
+        # Surface feature extraction
+        res1_s = self.relu(self.conv1_s(s))
+        res2_s = self.relu(self.conv2_s(res1_s))
+        res3_s = self.relu(self.conv3_s(res2_s))
 
-        # backbone
-        # res1 = self.skipConv1(x)
-        res1   = self.skipConv1(argv[0])
-        x      = self.relu(self.conv1(x) + res1_s)
-        res2   = self.skipConv2(x)
-        x      = self.relu(self.conv2(x) + res2_s)
-        res3   = self.skipConv3(x)
-        x      = self.relu(self.conv3(x) + res3_s)
-        x      = self.relu(self.conv4(x) + res4_s)
-        x      = self.relu(self.conv5(x) + res3)
-        x      = self.relu(self.transConv1(x) + res2)
-        x      = self.relu(self.transConv2(x))
-        x      = torch.clamp(self.relu(self.conv6(x) + res1), max = 1)
+        # Backbone
+        res1 = self.skipConv1(argv[0])
+        x = self.relu(self.conv1(x) + res1_s)
+        res2 = self.skipConv2(x)
+        x = self.relu(self.conv2(x) + res2_s)
+        x = self.relu(self.conv3(x) + res3_s)
+        x = self.relu(self.conv4(x) + res2)
+
+        # Attention in skip connections
+        att1 = self.attention1(res2) * res2
+        att2 = self.attention2(x) * x
+
+        x = self.relu(att2 + att1)
+        x = self.relu(self.transConv1(x))
+        x = torch.clamp(self.relu(self.conv6(x) + res1), max=1)
 
         return x
 
@@ -319,39 +310,6 @@ class SEBlock(nn.Module):
         y = self.fc(y).view(b, c, 1, 1)
         return x * y
 
-class ImprovedShadingNet(nn.Module):
-    def __init__(self, use_rough=True):
-        super(ImprovedShadingNet, self).__init__()
-        self.use_rough = use_rough
-        self.name = self.__class__.__name__
-        self.relu = nn.ReLU()
-
-        # Backbone with attention modules
-        self.conv1 = nn.Conv2d(3, 32, 3, 1, 1)  # 不采用下采样
-        self.att1 = CBAMBlock(32)
-        self.conv2 = nn.Conv2d(32, 64, 3, 1, 1)
-        self.att2 = SEBlock(64)
-
-        # Reduce the number of downsample/upsample layers
-        self.transConv1 = nn.Conv2d(64, 32, 3, 1, 1)
-        self.transConv2 = nn.Conv2d(32, 3, 3, 1, 1)
-
-        # Skip layers
-        self.skipConv1 = nn.Sequential(
-            nn.Conv2d(3, 3, 1, 1, 0),
-            self.relu,
-            nn.Conv2d(3, 3, 3, 1, 1),
-            self.relu
-        )
-
-    def forward(self, x):
-        res1 = self.skipConv1(x)
-        x = self.relu(self.conv1(x))
-        x = self.att1(x)  # 添加 CBAM 注意力
-        x = self.relu(self.conv2(x))
-        x = self.att2(x)  # 添加 SE 注意力
-        x = self.relu(self.transConv1(x))
-        x = torch.clamp(self.relu(self.transConv2(x) + res1), max=1)
         return x
 
 class PCNet(nn.Module):
