@@ -6,7 +6,9 @@ import torch.nn.functional as F
 import copy
 import pytorch_tps
 
-
+def smooth_clamp(x, min, max):
+    scale = max - min
+    return torch.sigmoid(x) * scale + min
 # CompenNet
 class CompenNet(nn.Module):
     def __init__(self):
@@ -96,7 +98,7 @@ class CompenNet(nn.Module):
 
 # WarpingNet
 class WarpingNet(nn.Module):
-    def __init__(self, grid_shape=(6, 6), out_size=(256, 256), with_refine=True):
+    def __init__(self, grid_shape=(4, 4), out_size=(256, 256), with_refine=True):
         super(WarpingNet, self).__init__()
         self.grid_shape  = grid_shape
         self.out_size    = tuple(out_size)
@@ -121,14 +123,42 @@ class WarpingNet(nn.Module):
         self.theta  = nn.Parameter(torch.ones((1, self.nparam * 2), dtype=torch.float32).view(-1, self.nparam, 2) * 1e-3)
 
         # initialization function, first checks the module type,
-        def init_normal(m):
+        def init_normal1(m):
             if type(m) == nn.Conv2d:
                 nn.init.normal_(m.weight, 0, 1e-4)
+        def init_normal2(m):
+            if type(m) == nn.Conv2d:
+                nn.init.normal_(m.weight, 0, 1e-2)
 
         # grid refinement net
         if self.with_refine:
+            self.conv1 = nn.Conv2d(5, 32, 3, 2, 1)
+            self.conv2 = nn.Conv2d(32, 64, 3, 1, 1)
+            self.conv3 = nn.Conv2d(64, 128, 3, 1, 1)
+            self.conv4 = nn.ConvTranspose2d(128, 64, 1, 1, 0)
+            self.conv5 = nn.ConvTranspose2d(64, 32, 1, 1, 0)
+            self.conv6 = nn.ConvTranspose2d(32, 2, 2, 2, 0)
+            self.skipconv1 = nn.Conv2d(5, 2, 3, 1, 1)
+            self.skipconv2 = nn.Conv2d(32, 64, 3, 1, 1)
+            self.grid_refine_net_down = nn.Sequential(
+                nn.Conv2d(5, 32, 3, 2, 1),
+                self.relu,
+                nn.Conv2d(32, 64, 3, 1, 1),
+                self.relu,
+                nn.Conv2d(64, 128, 3, 1, 1),
+                self.relu,
+            )
+            self.attention1 = self._channel_attention(128, 8)
+            self.grid_refine_net_up = nn.Sequential(
+                nn.ConvTranspose2d(128, 64, 1, 1, 0),
+                self.relu,
+                nn.ConvTranspose2d(64, 32, 1, 1, 0),
+                self.relu,
+                nn.ConvTranspose2d(32, 2, 2, 2, 0),
+                self.leakyRelu
+            )
             self.grid_refine_net = nn.Sequential(
-                nn.Conv2d(2, 32, 3, 2, 1),
+                nn.Conv2d(5, 32, 3, 2, 1),
                 self.relu,
                 nn.Conv2d(32, 64, 3, 2, 1),
                 self.relu,
@@ -137,11 +167,23 @@ class WarpingNet(nn.Module):
                 nn.ConvTranspose2d(32, 2, 2, 2, 0),
                 self.leakyRelu
             )
-            self.grid_refine_net.apply(init_normal)
+            self.grid_refine_net.apply(init_normal1)
+            self.grid_refine_net_down.apply(init_normal2)
+            self.grid_refine_net_up.apply(init_normal2)
+            self.attention1.apply(init_normal2)
         else:
             self.grid_refine_net = None  # WarpingNet w/o refine
 
     # initialize WarpingNet's affine matrix to the input affine_vec
+    def _channel_attention(self, channels, reduction_ratio):
+        """Squeeze-and-Excitation attention block"""
+        return nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // reduction_ratio, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction_ratio, channels, 1),
+            nn.Sigmoid(),
+        )
     def set_affine(self, affine_vec):
         self.affine_mat.data = torch.Tensor(affine_vec).view(-1, 2, 3)
 
@@ -160,8 +202,7 @@ class WarpingNet(nn.Module):
         else:
             self.fine_grid = torch.clamp(tps_grid, min=-1, max=1).permute((0, 2, 3, 1))
 
-    def forward(self, x):
-
+    def forward(self, x, s):
         if self.fine_grid is None:
             # not simplified (training/validation)
             # generate coarse affine and TPS grids
@@ -173,7 +214,19 @@ class WarpingNet(nn.Module):
 
             # refine TPS grid using grid refinement net and save it to self.fine_grid
             if self.with_refine:
-                fine_grid = torch.clamp(self.grid_refine_net(tps_grid) + tps_grid, min=-1, max=1).permute((0, 2, 3, 1))
+                tmp = self.grid_refine_net_down(torch.cat((tps_grid, s), dim=1))
+                tmp = self.attention1(tmp) * tmp
+                tmp = self.grid_refine_net_up(self.relu(tmp))
+                # res1 = self.skipconv1(torch.cat((tps_grid, s), dim=1))
+                # tmp = self.relu(self.conv1(torch.cat((tps_grid, s), dim=1)))
+                # res2 = self.skipconv2(tmp)
+                # tmp = self.relu(self.conv2(tmp))
+                # tmp = self.relu(self.conv3(tmp))
+                # tmp = self.attention1(tmp) * tmp
+                # tmp = self.relu(self.conv4(tmp) + res2)
+                # tmp = self.relu(self.conv5(tmp))
+                # tmp = self.relu(self.conv6(tmp) + res1)
+                fine_grid = torch.clamp(tmp + tps_grid, min=-1, max=1).permute((0, 2, 3, 1))
             else:
                 fine_grid = torch.clamp(tps_grid, min=-1, max=1).permute((0, 2, 3, 1))
         else:
@@ -219,20 +272,22 @@ class ShadingNetSPAA(nn.Module):
         self.relu = nn.ReLU()
 
         # Backbone branch (reduce downsampling to 1)
-        self.conv1 = nn.Conv2d(3, 64, 3, 2, 1)  # Combine conv1 and conv2
-        self.conv2 = nn.Conv2d(64, 128, 3, 1, 1)  # Keep conv3 unchanged
-        self.conv3 = nn.Conv2d(128, 256, 3, 1, 1)  # Keep conv4 unchanged
-        self.conv4 = nn.Conv2d(256, 128, 3, 1, 1)  # Same as conv5
+        self.conv1 = nn.Conv2d(3, 32, 3, 2, 1)  # Combine conv1 and conv2
+        self.conv2 = nn.Conv2d(32, 64, 3, 1, 1)  # Keep conv3 unchanged
+        self.conv3 = nn.Conv2d(64, 128, 3, 1, 1)  # Keep conv4 unchanged
+        # self.conv4 = nn.Conv2d(128, 256, 3, 1, 1)
+        # self.conv5 = nn.Conv2d(256, 128, 3, 1, 1)
 
         # Surface feature extraction branch (adjust for reduced downsampling)
         num_chan = 6 if self.use_rough else 3
-        self.conv1_s = nn.Conv2d(num_chan, 64, 3, 2, 1)
-        self.conv2_s = nn.Conv2d(64, 128, 3, 1, 1)
-        self.conv3_s = nn.Conv2d(128, 256, 3, 1, 1)
+        self.conv1_s = nn.Conv2d(num_chan, 32, 3, 2, 1)
+        self.conv2_s = nn.Conv2d(32, 64, 3, 1, 1)
+        self.conv3_s = nn.Conv2d(64, 128, 3, 1, 1)
 
         # Transposed convolution (reduce to 1 upsampling)
-        self.transConv1 = nn.ConvTranspose2d(128, 64, 3, 2, 1, 1)
-        self.conv6 = nn.Conv2d(64, 3, 3, 1, 1)
+        self.conv4 = nn.Conv2d(128, 64, 3, 1, 1)
+        self.transConv1 = nn.ConvTranspose2d(64, 32, 3, 2, 1, 1)
+        self.conv5 = nn.Conv2d(32, 3, 3, 1, 1)
 
         # Skip layers with attention mechanism
         self.skipConv1 = nn.Sequential(
@@ -243,24 +298,40 @@ class ShadingNetSPAA(nn.Module):
             nn.Conv2d(3, 3, 3, 1, 1),
             self.relu,
         )
-        self.skipConv2 = nn.Conv2d(64, 128, 1, 1, 0)
-
+        self.skipConv2 = nn.Sequential(
+            nn.Conv2d(3, 3, 3, 1, 1),
+            self.relu,
+            nn.Conv2d(3, 32, 3, 1, 1),
+        )
+        self.skipConv3 = nn.Sequential(
+            nn.Conv2d(64, 64, 3, 1, 1),
+            self.relu
+        )
         # Attention modules for skip connections
-        self.attention1 = self._channel_attention(128)
-        self.attention2 = self._channel_attention(128)
+        self.attention1 = self._channel_attention(128, 16)
+        self.attention2 = self._channel_attention(128, 16)
+        def init_normal(m):
+            if type(m) == nn.Conv2d:
+                nn.init.normal_(m.weight, 0, 1e-4)
 
         # Initialize weights
         self._initialize_weights()
+        self.attention1.apply(init_normal)
+        self.attention2.apply(init_normal)
 
-    def _channel_attention(self, channels):
+    def _channel_attention(self, channels, reduction_ratio):
         """Squeeze-and-Excitation attention block"""
         return nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(channels, channels // 16, 1),
+            nn.Conv2d(channels, channels // reduction_ratio, 1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(channels // 16, channels, 1),
+            nn.Conv2d(channels // reduction_ratio, channels, 1),
             nn.Sigmoid(),
         )
+
+    def init_normal(m):
+        if type(m) == nn.Conv2d:
+            nn.init.normal_(m.weight, 0, 1e-4)
 
     def _initialize_weights(self):
         for m in self.modules():
@@ -277,40 +348,18 @@ class ShadingNetSPAA(nn.Module):
 
         # Backbone
         res1 = self.skipConv1(argv[0])
-        x = self.relu(self.conv1(x) + res1_s)
         res2 = self.skipConv2(x)
+        x = self.relu(self.conv1(x) + res1_s)
         x = self.relu(self.conv2(x) + res2_s)
+        res3 = self.skipConv3(x)
         x = self.relu(self.conv3(x) + res3_s)
-        x = self.relu(self.conv4(x) + res2)
-
-        # Attention in skip connections
-        att1 = self.attention1(res2) * res2
-        att2 = self.attention2(x) * x
-
-        x = self.relu(att2 + att1)
-        x = self.relu(self.transConv1(x))
-        x = torch.clamp(self.relu(self.conv6(x) + res1), max=1)
-
+        x = self.relu(self.attention1(x) * x)
+        x = self.relu(self.conv4(x) + res3)
+        x = self.relu(self.transConv1(x) + res2)
+        x = torch.clamp(self.relu(self.conv5(x) + res1), min=0, max=1)
+        #
         return x
 
-class SEBlock(nn.Module):
-    def __init__(self, in_channels, reduction=16):
-        super(SEBlock, self).__init__()
-        self.global_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(in_channels, in_channels // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(in_channels // reduction, in_channels, bias=False),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        b, c, _, _ = x.size()
-        y = self.global_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        return x * y
-
-        return x
 
 class PCNet(nn.Module):
     # Project-and-Capture Network for SPAA
@@ -344,7 +393,7 @@ class PCNet(nn.Module):
     # s is Bx3x256x256 surface image
     def forward(self, x, s):
         # geometric correction using WarpingNet
-        x = self.warping_net(x)
+        x = self.warping_net(x, s)
 
         if self.use_mask:
             x = x * self.mask
@@ -353,4 +402,15 @@ class PCNet(nn.Module):
         else:
             x = self.shading_net(x, s)
 
+        return x
+
+    def warp_only(self, x, s):
+        x = self.warping_net(x, s)
+        if self.use_mask:
+            return x * self.mask
+        else:
+            return x
+
+    def shade_only(self, x):
+        x = self.warping_net(x)
         return x

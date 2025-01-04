@@ -19,6 +19,7 @@ from PIL import Image
 
 import pytorch_ssim
 import My_models as models
+# import My_simple_models as models
 # import models
 from img_proc import threshold_im, center_crop as cc
 from src.python import ImgProc
@@ -48,8 +49,8 @@ def load_data(data_root, setup_name, input_size=None, compensation=False):
     cam_train_path = join(setup_path, 'cam/raw/train')
     cam_valid_path = join(setup_path, 'cam/raw/test')
     cam_cb_path    = join(setup_path, 'cam/raw/cb')
-    prj_train_path = join(data_root , 'prj_DR/train')
-    prj_valid_path = join(data_root , 'prj_DR/test')
+    prj_train_path = join(data_root , 'prj_share/train')
+    prj_valid_path = join(data_root , 'prj_share/test')
     print("Loading data from '{}'".format(setup_path))
 
     # load setup_info
@@ -277,13 +278,17 @@ def train_pcnet(model, train_data, valid_data, cfg):
 
     # params, optimizers and lr schedulers
     aff_tps_params    = list(map(lambda x: x[1], list(filter(lambda kv: kv[0] in ['module.warping_net.affine_mat', 'module.warping_net.theta'] , model.named_parameters()))))
-    refinenet_params  = list(map(lambda x: x[1], list(filter(lambda kv: 'module.warping_net.grid_refine_net' in kv[0], model.named_parameters()))))
-    shadingnet_params = list(map(lambda x: x[1], list(filter(lambda kv: 'module.warping_net' not in kv[0]            , model.named_parameters()))))
+    refinenet_params  = list(map(lambda x: x[1], list(filter(lambda kv: 'module.warping_net.grid_refine_net' in kv[0] or 'module.warping_net.grid_refine_net_up' in kv[0] or 'module.warping_net.grid_refine_net_down' in kv[0] or 'module.warping_net.conv' in kv[0], model.named_parameters()))))
+    warping_attention_params  = list(map(lambda x: x[1], list(filter(lambda kv: 'module.warping_net.attention' in kv[0]            , model.named_parameters()))))
+    shading_params = list(map(lambda x: x[1], list(filter(lambda kv: 'module.warping_net' not in kv[0] and 'module.shading_net.attention' not in kv[0]           , model.named_parameters()))))
+    shading_attention_params = list(map(lambda x: x[1], list(filter(lambda kv: 'module.shading_net.attention' in kv[0], model.named_parameters()))))
 
     if 1:
         w1_optimizer = optim.Adam([{'params': aff_tps_params}]   , lr = 1e-2, weight_decay = 0)
-        w2_optimizer = optim.Adam([{'params': refinenet_params}] , lr = 5e-3, weight_decay = 0)
-        s_optimizer  = optim.Adam([{'params': shadingnet_params}], lr = 1e-3, weight_decay = cfg.l2_reg)
+        w2_optimizer = optim.Adam([{'params': refinenet_params}] , lr = 2e-3, weight_decay = 0)
+        warping_attention_optimizer = optim.Adam([{'params': warping_attention_params}], lr=1e-2, weight_decay=0)
+        shading_attention_optimizer = optim.Adam([{'params': shading_attention_params}], lr=5e-3, weight_decay=cfg.l2_reg)
+        s_optimizer  = optim.Adam([{'params': shading_params}], lr = 1e-3, weight_decay = cfg.l2_reg)
     else:
         # for pretrained PCNet finetune
         w1_optimizer = optim.Adam([{'params': aff_tps_params}]   , lr = 1e-3, weight_decay = 0)
@@ -291,9 +296,11 @@ def train_pcnet(model, train_data, valid_data, cfg):
         s_optimizer  = optim.Adam([{'params': shadingnet_params}], lr = 1e-4, weight_decay = cfg.l2_reg)
 
     # learning rate drop scheduler
-    w1_lr_scheduler = optim.lr_scheduler.MultiStepLR(w1_optimizer, milestones = [100],  gamma = cfg.lr_drop_ratio)
+    w1_lr_scheduler = optim.lr_scheduler.MultiStepLR(w1_optimizer, milestones = [100, 400],  gamma = cfg.lr_drop_ratio)
     w2_lr_scheduler = optim.lr_scheduler.MultiStepLR(w2_optimizer, milestones = [1200], gamma = cfg.lr_drop_ratio)
-    s_lr_scheduler  = optim.lr_scheduler.MultiStepLR(s_optimizer , milestones = [1800], gamma = cfg.lr_drop_ratio)
+    warping_attention_lr_scheduler = optim.lr_scheduler.MultiStepLR(warping_attention_optimizer, milestones=[1200], gamma=cfg.lr_drop_ratio)
+    shading_attention_lr_scheduler = optim.lr_scheduler.MultiStepLR(shading_attention_optimizer, milestones=[1600], gamma=cfg.lr_drop_ratio)
+    s_lr_scheduler  = optim.lr_scheduler.MultiStepLR(s_optimizer , milestones = [1600], gamma = cfg.lr_drop_ratio)
 
     # %% start train
     start_time = time.time()
@@ -336,18 +343,32 @@ def train_pcnet(model, train_data, valid_data, cfg):
         # infer and compute loss
         model.train()  # explicitly set to train mode in case batchNormalization and dropout are used
         cam_train_infer = model(prj_train_batch, cam_scene_train_batch)
+        warp_train_infer = torch.clamp(model.module.warp_only(prj_train_batch, cam_scene_train_batch),-1,1)
         train_loss_batch, train_l2_loss_batch = compute_loss(cam_train_infer, cam_train_batch, cfg.loss)
         train_rmse_batch = math.sqrt(train_l2_loss_batch.item() * 3)  # 3 channel, rgb
+
+        selected_params = [p for name, p in model.named_parameters() if 'module.warping_net.grid_refine_net' in name or
+                           'module.warping_net.grid_refine_net_up' in name or
+                           'module.warping_net.grid_refine_net_down' in name or
+                           'module.warping_net.grid_refine_net_attention' in name]
 
         # backpropagation and update params
         w1_optimizer.zero_grad()
         w2_optimizer.zero_grad()
+        warping_attention_optimizer.zero_grad()
+        shading_attention_optimizer.zero_grad()
         s_optimizer.zero_grad()
 
+        # if iters > 0:
+        #     l1_norm = sum((p.abs()).sum() for p in selected_params)
+        #     l1_regular_loss = 1e-4 * l1_norm
+        #     l1_regular_loss.backward()
         train_loss_batch.backward()
 
         w1_optimizer.step()
         w2_optimizer.step()
+        warping_attention_optimizer.step()
+        shading_attention_optimizer.step()
         s_optimizer.step()
 
         # record running time
@@ -358,7 +379,7 @@ def train_pcnet(model, train_data, valid_data, cfg):
             vis_idx = range(5)
             # cp_sz = cfg.setup_info.classifier_crop_sz  # visualize center crop
             if iters % cfg.train_plot_rate == 0 or iters == cfg.max_iters - 1:
-                vis_train_fig = plot_montage(prj_train_batch[vis_idx], cam_train_infer[vis_idx], cam_train_batch[vis_idx], win=vis_train_fig,
+                vis_train_fig = plot_montage(prj_train_batch[vis_idx], cam_train_infer[vis_idx], warp_train_infer[vis_idx], cam_train_batch[vis_idx], win=vis_train_fig,
                                              title='[Train]' + title)
                 append_data_point(iters, train_loss_batch.item(), vis_curve_fig, 'train_loss')
                 append_data_point(iters, train_rmse_batch, vis_curve_fig, 'train_rmse')
@@ -385,6 +406,8 @@ def train_pcnet(model, train_data, valid_data, cfg):
         # update learning rates according to schedule
         w1_lr_scheduler.step()
         w2_lr_scheduler.step()
+        warping_attention_lr_scheduler.step()
+        shading_attention_lr_scheduler.step()
         s_lr_scheduler.step()
         iters += 1
 
@@ -395,7 +418,7 @@ def train_pcnet(model, train_data, valid_data, cfg):
 
 
 # compute loss between inference and ground truth
-def compute_loss(prj_infer, prj_train, loss_option):
+def compute_loss(prj_infer,prj_train, loss_option):
     if loss_option == '':
         raise TypeError('Loss type not specified')
 
@@ -482,12 +505,12 @@ def get_model_train_cfg(model_list, data_root=None, setup_list=None, device_ids=
     cfg_default.device_ids         = device_ids
     cfg_default.load_pretrained    = load_pretrained
     cfg_default.max_iters          = 2000
-    cfg_default.batch_size         = 16
+    cfg_default.batch_size         = 24
     cfg_default.lr                 = 1e-3
     cfg_default.lr_drop_ratio      = 0.2
     cfg_default.lr_drop_rate       = 800            # TODO PCNet uses its own lr_drop_rate, and this is ignored
     cfg_default.l2_reg             = 1e-4
-    cfg_default.train_plot_rate    = 50
+    cfg_default.train_plot_rate    = 20
     cfg_default.valid_rate         = 200            # validation and visdom plot rate (use a larger valid_rate to save running time)
     cfg_default.plot_on            = plot_on        # disable when running stats for all setups
     cfg_default.center_crop        = center_crop    # whether to center crop the training/validation images
