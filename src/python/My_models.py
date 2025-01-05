@@ -143,16 +143,20 @@ class WarpingNet(nn.Module):
             self.grid_refine_net_down = nn.Sequential(
                 nn.Conv2d(5, 32, 3, 2, 1),
                 self.relu,
-                nn.Conv2d(32, 64, 3, 1, 1),
+                nn.Conv2d(32, 64, 3, 2, 1),
                 self.relu,
                 nn.Conv2d(64, 128, 3, 1, 1),
                 self.relu,
+                nn.Conv2d(128, 256, 3, 1, 1),
+                self.relu,
             )
-            self.attention1 = self._channel_attention(128, 8)
+            self.attention1 = self._channel_attention(256, 16)
             self.grid_refine_net_up = nn.Sequential(
+                nn.ConvTranspose2d(256, 128, 1, 1, 0),
+                self.relu,
                 nn.ConvTranspose2d(128, 64, 1, 1, 0),
                 self.relu,
-                nn.ConvTranspose2d(64, 32, 1, 1, 0),
+                nn.ConvTranspose2d(64, 32, 2, 2, 0),
                 self.relu,
                 nn.ConvTranspose2d(32, 2, 2, 2, 0),
                 self.leakyRelu
@@ -309,7 +313,6 @@ class ShadingNetSPAA(nn.Module):
         )
         # Attention modules for skip connections
         self.attention1 = self._channel_attention(128, 16)
-        self.attention2 = self._channel_attention(128, 16)
         def init_normal(m):
             if type(m) == nn.Conv2d:
                 nn.init.normal_(m.weight, 0, 1e-4)
@@ -317,7 +320,6 @@ class ShadingNetSPAA(nn.Module):
         # Initialize weights
         self._initialize_weights()
         self.attention1.apply(init_normal)
-        self.attention2.apply(init_normal)
 
     def _channel_attention(self, channels, reduction_ratio):
         """Squeeze-and-Excitation attention block"""
