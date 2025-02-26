@@ -54,7 +54,7 @@ PyTorch's implementation of SPAA ([paper][1]). Please refer to [supplementary ma
 #### Compare the three projector-based attackers in your setups
 
 1. Finish the steps above.
-2. Open [`main.py`](src/python/main.py) and follow the instructions there. Execute each cell (starting with `# %%`) one-by-one (e.g., use PyCharm **Execute cell in console**) to learn how to set up your projector-camera systems, capture data, train PCNet/CompenNet++, perform the three projector-based attacks (i.e., SPAA/PerC-AL+CompenNet++/One-pixel_DE), and generate the attack results.
+2. Open [`main.py`](src/python/PCNet/main.py) and follow the instructions there. Execute each cell (starting with `# %%`) one-by-one (e.g., use PyCharm **Execute cell in console**) to learn how to set up your projector-camera systems, capture data, train PCNet/CompenNet++, perform the three projector-based attacks (i.e., SPAA/PerC-AL+CompenNet++/One-pixel_DE), and generate the attack results.
 3. The results will be saved to `data/setups/[your setup]/ret`
 4. Training results of PCNet/CompenNet++ will also be saved to `log/%Y-%m-%d_%H_%M_%S.txt` and `log/%Y-%m-%d_%H_%M_%S.xls`.
 
