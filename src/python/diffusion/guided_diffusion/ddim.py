@@ -1568,7 +1568,7 @@ class Test_DDIMSampler(DDIMSampler):
             alpha = 1
             # if index > 175:
             #     alpha = 0.5
-            for step in range(self.num_iteration_optimize_xt):
+            for step in range(0):
                 #loss_L2 = self.loss_L2(x0, pred_x0, mask, model_kwargs["weight_mask_unknown"])
                 loss_L2 = self.loss_L2(x0, pred_x0, mask, torch.ones_like(model_kwargs["weight_mask_unknown"]))
                 #loss_L2 = self.loss_L2(x0, pred_x0, mask, (model_kwargs["weight_mask_unknown"] * index / 250 + torch.ones_like(model_kwargs["weight_mask_unknown"]) * (250 - index) / 250 ))

@@ -135,39 +135,7 @@ def main():
 
     all_paths = get_all_paths(config.outdir)
     config.dump(all_paths["path_config"])
-    get_logger(all_paths["path_log"], force_add_handler=True)
-    recorder = ResultRecorder(
-        path_record=all_paths["path_record"],
-        initial_record=config,
-        use_git=config.use_git,
-    )
     set_random_seed(random.randint(0,100000000), deterministic=False, no_torch=False, no_tf=True)
-
-    ###################################################################################
-    # prepare data
-    ###################################################################################
-    if config.input_image == "":  # if input image is not given, load dataset
-        datas = prepare_data(
-            config.dataset_name,
-            config.mask_type,
-            config.dataset_starting_index,
-            config.dataset_ending_index,
-            maxlen=config.num_samples,
-            split=config.setup_list,
-        )
-    else:
-        # NOTE: the model should accepet this input image size
-        image = normalize(Image.open(config.input_image).convert("RGB"))
-        if config.mode != "super_resolution":
-            mask = (
-                torch.from_numpy(np.array(Image.open(config.mask).convert("1"), dtype=np.float32))
-                .unsqueeze(0)
-                .unsqueeze(0)
-            )
-        else:
-            mask = torch.from_numpy(np.array([0]))  # just a dummy value
-        datas = [(image, mask, "sample0")]
-
     ###################################################################################
     # prepare model and device
     ###################################################################################
@@ -184,121 +152,153 @@ def main():
         "psnr": Metric(PSNR(), eval_type="max"),
         "ssim": Metric(SSIM(), eval_type="max"),
     }
-    final_loss = []
-
-    ###################################################################################
-    # start sampling
-    ###################################################################################
-    logging_info("Start sampling")
-    timer, num_image = Timer(), 0
-    batch_size = config.n_samples
-    counter = 0
-    for data in tqdm(datas):
-        if config.class_cond:
-            image, mask, image_name, class_id = data
+    for setup in config.setup_list.split(","):
+        ###################################################################################
+        # prepare data
+        ###################################################################################
+        if config.input_image == "":  # if input image is not given, load dataset
+            datas = prepare_data(
+                config.dataset_name,
+                config.mask_type,
+                config.dataset_starting_index,
+                config.dataset_ending_index,
+                maxlen=config.num_samples,
+                split=setup,
+            )
         else:
-            image, mask, image_name, class_id= data
-            class_id = None
-        # prepare save dir
-        outpath = os.path.join(config.outdir, image_name)
-        os.makedirs(outpath, exist_ok=True)
-        sample_path = os.path.join(outpath, "samples")
-        os.makedirs(sample_path, exist_ok=True)
-        base_count = len(os.listdir(sample_path))
-        grid_count = max(len(os.listdir(outpath)) - 3, 0)
-
-        # prepare batch data for processing
-        batch = {"image": image.to(device), "mask": mask.to(device)}
-        model_kwargs = {
-            "image_name":image_name,
-            "gt": batch["image"].repeat(batch_size, 1, 1, 1),
-            "gt_keep_mask": batch["mask"].repeat(batch_size, 1, 1, 1),
-            "outdir": config.outdir,
-        }
-        if config.missing_info:
-            mask = model_kwargs["gt_keep_mask"]
-            mask = (mask * 255).to(torch.uint8)
-            mask = mask.squeeze().cpu().numpy()
-            # 面积
-            White = 255
-            white_pixel_count = np.sum(mask == 255 if White == 255 else mask == 0)
-            black_pixel_count = np.sum(mask == 0 if White == 255 else mask == 255)
-            # 找到黑色像素的位置
-            black_pixels = np.argwhere(mask == 0 if White == 255 else mask == 255)
-            # 找到白色像素的位置
-            white_pixels = np.argwhere(mask == 255 if White == 255 else mask == 0)
-            # 使用sklearn的NearestNeighbors找到每个黑色像素十个最近邻白色像素
-            n_neighbors = 10
-            power = 1
-            clip = 7
-            nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='kd_tree').fit(white_pixels)
-            distances, indices = nbrs.kneighbors(black_pixels)
-            # # 计算每个黑色像素的十个最近邻白色像素的欧式距离之和
-            # total_distance = np.sum(np.sum(distances, axis=1))/255/255/100
-            # 计算每个黑色像素的十个最近邻白色像素的欧式距离的倒数的平方
-            inverse_distances_squared = 1 / (distances ** power)
-            # print(inverse_distances_squared)
-            a = np.clip(np.sum(inverse_distances_squared, axis=1), 0, clip)
-            total_inverse_distance_squared = np.sum(a)
-            lost_info = (clip * black_pixel_count - total_inverse_distance_squared) / 255 / 255 / clip * 100
-            float_mask = np.zeros_like(mask, dtype=np.float32)
-            float_mask[black_pixels[:, 0], black_pixels[:, 1]] = a / clip
-            float_mask = torch.from_numpy(float_mask).to(device).repeat(1,1,1,1)
-            model_kwargs["weight_mask_known"] = float_mask
-
-            model_kwargs["lost_info"] = lost_info * 0.01
-            model_kwargs["known_info"] = 1 - lost_info * 0.01
-
-            #计算mask的missing information
-            White = 0
-            white_pixel_count = np.sum(mask == 255 if White == 255 else mask == 0)
-            black_pixel_count = np.sum(mask == 0 if White == 255 else mask == 255)
-            # 找到黑色像素的位置
-            black_pixels = np.argwhere(mask == 0 if White == 255 else mask == 255)
-            # 找到白色像素的位置
-            white_pixels = np.argwhere(mask == 255 if White == 255 else mask == 0)
-            # 使用sklearn的NearestNeighbors找到每个黑色像素十个最近邻白色像素
-            n_neighbors = 10
-            power = 1
-            clip = 7
-            nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='kd_tree').fit(white_pixels)
-            distances, indices = nbrs.kneighbors(black_pixels)
-            # # 计算每个黑色像素的十个最近邻白色像素的欧式距离之和
-            # total_distance = np.sum(np.sum(distances, axis=1))/255/255/100
-            # 计算每个黑色像素的十个最近邻白色像素的欧式距离的倒数的平方
-            inverse_distances_squared = 1 / (distances ** power)
-            # print(inverse_distances_squared)
-            a = np.clip(np.sum(inverse_distances_squared, axis=1), 0, clip)
-            total_inverse_distance_squared = np.sum(a)
-            lost_info = (clip * black_pixel_count - total_inverse_distance_squared) / 255 / 255 / clip * 100
-            float_mask = np.zeros_like(mask, dtype=np.float32)
-            float_mask[black_pixels[:, 0], black_pixels[:, 1]] = a / clip
-            float_mask *= 256 * 256 / float_mask.sum()
-            float_mask = torch.from_numpy(float_mask).to(device).repeat(1, 1, 1, 1)
-            model_kwargs["weight_mask_unknown"] = float_mask
-            print(lost_info)
-        if config.class_cond:
-            if config.cond_y is not None:
-                classes = torch.ones(batch_size, dtype=torch.long, device=device)
-                model_kwargs["y"] = classes * config.cond_y
-            elif config.classifier_path is not None:
-                classes = torch.full((batch_size,), class_id, device=device)
-                model_kwargs["y"] = classes
-
-        shape = (batch_size, 3, config.image_size, config.image_size)
-
-        all_metric_paths = [
-            os.path.join(outpath, i + ".last")
-            for i in (list(METRICS.keys()) + ["final_loss"])
-        ]
-        if config.get("resume", False) and all_exist(all_metric_paths):
-            for metric_name, metric in METRICS.items():
-                metric.dataset_scores += torch.load(
-                    os.path.join(outpath, metric_name + ".last")
+            # NOTE: the model should accepet this input image size
+            image = normalize(Image.open(config.input_image).convert("RGB"))
+            if config.mode != "super_resolution":
+                mask = (
+                    torch.from_numpy(np.array(Image.open(config.mask).convert("1"), dtype=np.float32))
+                    .unsqueeze(0)
+                    .unsqueeze(0)
                 )
-            logging_info("Results exists. Skip!")
-        else:
-            for setup in config.setup_list:
+            else:
+                mask = torch.from_numpy(np.array([0]))  # just a dummy value
+            datas = [(image, mask, "sample0")]
+
+
+
+        ###################################################################################
+        # start sampling
+        ###################################################################################
+        get_logger(all_paths["path_log"], force_add_handler=True)
+        recorder = ResultRecorder(
+            path_record=all_paths["path_record"],
+            initial_record=config,
+            use_git=config.use_git,
+        )
+        logging_info("Start sampling")
+        timer, num_image = Timer(), 0
+        batch_size = config.n_samples
+        counter = 0
+        final_loss = []
+        for data in tqdm(datas):
+            if config.class_cond:
+                image, mask, image_name, class_id = data
+            else:
+                image, mask, image_name, class_id= data
+                class_id = None
+            # prepare save dir
+            outpath = os.path.join(config.outdir, image_name, str(config.start_index) + '_' + str(config.interval_index))
+            os.makedirs(outpath, exist_ok=True)
+            sample_path = os.path.join(outpath, "samples")
+            os.makedirs(sample_path, exist_ok=True)
+            base_count = 0
+            grid_count = max(len(os.listdir(outpath)) - 3, 0)
+
+            # prepare batch data for processing
+            batch = {"image": image.to(device), "mask": mask.to(device)}
+            model_kwargs = {
+                "image_name":image_name,
+                "gt": batch["image"].repeat(batch_size, 1, 1, 1),
+                "gt_keep_mask": batch["mask"].repeat(batch_size, 1, 1, 1),
+                "outdir": config.outdir,
+            }
+            if config.missing_info:
+                mask = model_kwargs["gt_keep_mask"]
+                mask = (mask * 255).to(torch.uint8)
+                mask = mask.squeeze().cpu().numpy()
+                # 面积
+                White = 255
+                white_pixel_count = np.sum(mask == 255 if White == 255 else mask == 0)
+                black_pixel_count = np.sum(mask == 0 if White == 255 else mask == 255)
+                # 找到黑色像素的位置
+                black_pixels = np.argwhere(mask == 0 if White == 255 else mask == 255)
+                # 找到白色像素的位置
+                white_pixels = np.argwhere(mask == 255 if White == 255 else mask == 0)
+                # 使用sklearn的NearestNeighbors找到每个黑色像素十个最近邻白色像素
+                n_neighbors = 10
+                power = 1
+                clip = 7
+                nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='kd_tree').fit(white_pixels)
+                distances, indices = nbrs.kneighbors(black_pixels)
+                # # 计算每个黑色像素的十个最近邻白色像素的欧式距离之和
+                # total_distance = np.sum(np.sum(distances, axis=1))/255/255/100
+                # 计算每个黑色像素的十个最近邻白色像素的欧式距离的倒数的平方
+                inverse_distances_squared = 1 / (distances ** power)
+                # print(inverse_distances_squared)
+                a = np.clip(np.sum(inverse_distances_squared, axis=1), 0, clip)
+                total_inverse_distance_squared = np.sum(a)
+                lost_info = (clip * black_pixel_count - total_inverse_distance_squared) / 255 / 255 / clip * 100
+                float_mask = np.zeros_like(mask, dtype=np.float32)
+                float_mask[black_pixels[:, 0], black_pixels[:, 1]] = a / clip
+                float_mask = torch.from_numpy(float_mask).to(device).repeat(1,1,1,1)
+                model_kwargs["weight_mask_known"] = float_mask
+
+                model_kwargs["lost_info"] = lost_info * 0.01
+                model_kwargs["known_info"] = 1 - lost_info * 0.01
+
+                #计算mask的missing information
+                White = 0
+                white_pixel_count = np.sum(mask == 255 if White == 255 else mask == 0)
+                black_pixel_count = np.sum(mask == 0 if White == 255 else mask == 255)
+                # 找到黑色像素的位置
+                black_pixels = np.argwhere(mask == 0 if White == 255 else mask == 255)
+                # 找到白色像素的位置
+                white_pixels = np.argwhere(mask == 255 if White == 255 else mask == 0)
+                # 使用sklearn的NearestNeighbors找到每个黑色像素十个最近邻白色像素
+                n_neighbors = 10
+                power = 1
+                clip = 7
+                nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='kd_tree').fit(white_pixels)
+                distances, indices = nbrs.kneighbors(black_pixels)
+                # # 计算每个黑色像素的十个最近邻白色像素的欧式距离之和
+                # total_distance = np.sum(np.sum(distances, axis=1))/255/255/100
+                # 计算每个黑色像素的十个最近邻白色像素的欧式距离的倒数的平方
+                inverse_distances_squared = 1 / (distances ** power)
+                # print(inverse_distances_squared)
+                a = np.clip(np.sum(inverse_distances_squared, axis=1), 0, clip)
+                total_inverse_distance_squared = np.sum(a)
+                lost_info = (clip * black_pixel_count - total_inverse_distance_squared) / 255 / 255 / clip * 100
+                float_mask = np.zeros_like(mask, dtype=np.float32)
+                float_mask[black_pixels[:, 0], black_pixels[:, 1]] = a / clip
+                float_mask *= 256 * 256 / float_mask.sum()
+                float_mask = torch.from_numpy(float_mask).to(device).repeat(1, 1, 1, 1)
+                model_kwargs["weight_mask_unknown"] = float_mask
+                print(lost_info)
+            if config.class_cond:
+                if config.cond_y is not None:
+                    classes = torch.ones(batch_size, dtype=torch.long, device=device)
+                    model_kwargs["y"] = classes * config.cond_y
+                elif config.classifier_path is not None:
+                    classes = torch.full((batch_size,), class_id, device=device)
+                    model_kwargs["y"] = classes
+
+            shape = (batch_size, 3, config.image_size, config.image_size)
+
+            all_metric_paths = [
+                os.path.join(outpath, i + ".last")
+                for i in (list(METRICS.keys()) + ["final_loss"])
+            ]
+            if config.get("resume", False) and all_exist(all_metric_paths):
+                for metric_name, metric in METRICS.items():
+                    metric.dataset_scores += torch.load(
+                        os.path.join(outpath, metric_name + ".last")
+                    )
+                logging_info("Results exists. Skip!")
+            else:
                 # sample images
                 samples = []
                 for n in range(config.n_iter):
@@ -334,64 +334,64 @@ def main():
 
                 samples = torch.cat(samples)
 
-            # save images
-            # save gt images
-            save_grid(normalize_image(batch["image"]), os.path.join(outpath, f"gt.png"))
-            save_grid(
-                normalize_image(batch["image"] * batch["mask"]),
-                os.path.join(outpath, f"masked.png"),
-            )
-            # save generations
-            for sample in samples:
-                save_image(sample, os.path.join(sample_path, f"{base_count:05}.png"))
-                base_count += 1
-            save_grid(
-                samples,
-                os.path.join(outpath, f"grid-{grid_count:04}.png"),
-                nrow=batch_size,
-            )
-            # save metrics
+                # save images
+                # save gt images
+                save_grid(normalize_image(batch["image"]), os.path.join(outpath, f"gt.png"))
+                save_grid(
+                    normalize_image(batch["image"] * batch["mask"]),
+                    os.path.join(outpath, f"masked.png"),
+                )
+                # save generations
+                for sample in samples:
+                    save_image(sample, os.path.join(sample_path, f"{base_count:05}.png"))
+                    base_count += 1
+                save_grid(
+                    samples,
+                    os.path.join(outpath, f"grid-{grid_count:04}.png"),
+                    nrow=batch_size,
+                )
+                # save metrics
+                for metric_name, metric in METRICS.items():
+                    torch.save(metric.dataset_scores[-config.n_iter:], os.path.join(outpath, metric_name + ".last"))
+
+                torch.save(
+                    final_loss[-config.n_iter:], os.path.join(outpath, "final_loss.last"))
+
+                num_image += 1
+                last_duration = timer.get_last_duration()
+                logging_info(
+                    "It takes %.3lf seconds for image %s"
+                    % (float(last_duration), image_name)
+                )
+
+            # report batch scores
             for metric_name, metric in METRICS.items():
-                torch.save(metric.dataset_scores[-config.n_iter:], os.path.join(outpath, metric_name + ".last"))
+                recorder.add_with_logging(
+                    key=f"{metric_name}_score_{image_name}",
+                    value=metric.report_batch(),
+                )
 
-            torch.save(
-                final_loss[-config.n_iter:], os.path.join(outpath, "final_loss.last"))
-
-            num_image += 1
-            last_duration = timer.get_last_duration()
-            logging_info(
-                "It takes %.3lf seconds for image %s"
-                % (float(last_duration), image_name)
-            )
-
-        # report batch scores
+        # report over all results
         for metric_name, metric in METRICS.items():
+            mean, colbest_mean = metric.report_all()
+            recorder.add_with_logging(key=f"mean_{metric_name}", value=mean)
             recorder.add_with_logging(
-                key=f"{metric_name}_score_{image_name}",
-                value=metric.report_batch(),
+                key=f"best_mean_{metric_name}", value=colbest_mean)
+        if len(final_loss) > 0 and final_loss[0] is not None:
+            recorder.add_with_logging(
+                key="final_loss",
+                value=np.mean(final_loss),
+            )
+        if num_image > 0:
+            recorder.add_with_logging(
+                key="mean time", value=timer.get_cumulative_duration() / num_image
             )
 
-    # report over all results
-    for metric_name, metric in METRICS.items():
-        mean, colbest_mean = metric.report_all()
-        recorder.add_with_logging(key=f"mean_{metric_name}", value=mean)
-        recorder.add_with_logging(
-            key=f"best_mean_{metric_name}", value=colbest_mean)
-    if len(final_loss) > 0 and final_loss[0] is not None:
-        recorder.add_with_logging(
-            key="final_loss",
-            value=np.mean(final_loss),
+        logging_info(
+            f"Your samples are ready and waiting for you here: \n{config.outdir} \n"
+            f" \nEnjoy."
         )
-    if num_image > 0:
-        recorder.add_with_logging(
-            key="mean time", value=timer.get_cumulative_duration() / num_image
-        )
-
-    logging_info(
-        f"Your samples are ready and waiting for you here: \n{config.outdir} \n"
-        f" \nEnjoy."
-    )
-    recorder.end_recording()
+        recorder.end_recording()
 
 
 if __name__ == "__main__":

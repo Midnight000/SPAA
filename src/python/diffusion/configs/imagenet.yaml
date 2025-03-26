@@ -28,6 +28,9 @@ loss: LPIPS
 overwrite: true
 setup_list: pillow1
 
+start_index: 50
+interval_index: 10
+
 
 ########################################################################
 ## algorithm specific configs
