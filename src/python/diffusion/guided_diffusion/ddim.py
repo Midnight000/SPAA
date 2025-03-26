@@ -2,7 +2,7 @@ import math
 import os
 
 import src.python.back_prop_single
-from ..metrics.ssim import SSIMScore as SSIM
+from src.python.diffusion.metrics.ssim import SSIMScore as SSIM
 import lpips
 import numpy as np
 import torch
@@ -11,11 +11,11 @@ from torch.utils.checkpoint import checkpoint as grad_ckpt
 from tqdm import tqdm
 from PIL import Image
 
-from ..utils.logger import logging_info
-from .gaussian_diffusion import _extract_into_tensor
-from .new_scheduler import ddim_timesteps, ddim_repaint_timesteps
-from .respace import SpacedDiffusion
-from ..utils.File_Utils import make_dirs
+from src.python.diffusion.utils.logger import logging_info
+from src.python.diffusion.guided_diffusion.gaussian_diffusion import _extract_into_tensor
+from src.python.diffusion.guided_diffusion.new_scheduler import ddim_timesteps, ddim_repaint_timesteps
+from src.python.diffusion.guided_diffusion.respace import SpacedDiffusion
+from src.python.diffusion.utils.File_Utils import make_dirs
 import src.python.back_prop_single as compen
 
 def noise_like(shape, device, repeat=False):
@@ -1236,6 +1236,531 @@ class Info_O_DDIMSampler(DDIMSampler):
 
                 if conf["debug"]:
                     from ..utils import normalize_image, save_grid
+
+                    os.makedirs(os.path.join(
+                        sample_dir, "middles"), exist_ok=True)
+                    save_grid(
+                        normalize_image(x_t),
+                        os.path.join(
+                            sample_dir, "middles", f"mid-{prev_t[0].item()}.png"
+                        ),
+                    )
+                    save_grid(
+                        normalize_image(output["pred_x0"]),
+                        os.path.join(
+                            sample_dir, "middles", f"pred-{prev_t[0].item()}.png"
+                        ),
+                    )
+            else:  # time travel back
+                if status == "reverse" and conf.get(
+                    "optimize_xt.optimize_before_time_travel", False
+                ):
+                    # update xt if previous status is reverse
+                    x_t = self.get_updated_xt(
+                        model_fn,
+                        x=x_t,
+                        t=torch.tensor([cur_t] * shape[0], device=device),
+                        model_kwargs=model_kwargs,
+                        lr_xt=lr_xt,
+                        coef_xt_reg=coef_xt_reg,
+                    )
+                status = "forward"
+                assert prev_t == cur_t + 1, "Only support 1-step time travel back"
+                prev_t = torch.tensor([prev_t] * shape[0], device=device)
+                with torch.no_grad():
+                    x_t = self._undo(x_t, prev_t)
+                # undo lr decay
+                logging_info(f"Undo step: {cur_t}")
+                lr_xt /= self.lr_xt_decay
+                coef_xt_reg /= self.coef_xt_reg_decay
+
+        x_t = x_t.clamp(-1.0, 1.0)  # normalize
+        return {"sample": x_t, "loss": loss}
+
+    def get_updated_xt(self, model_fn, x, t, model_kwargs, lr_xt, coef_xt_reg):
+        return self.p_sample(
+            model_fn,
+            x=x,
+            t=t,
+            prev_t=torch.zeros_like(t, device=t.device),
+            model_kwargs=model_kwargs,
+            pred_xstart=None,
+            lr_xt=lr_xt,
+            coef_xt_reg=coef_xt_reg,
+        )["x"]
+
+class Test_DDIMSampler(DDIMSampler):
+    def __init__(self, use_timesteps, conf=None, **kwargs):
+        super().__init__(
+            use_timesteps=use_timesteps,
+            conf=conf,
+            **kwargs,
+        )
+
+        assert conf.get("optimize_xt.optimize_xt",
+                        False), "Double check on optimize"
+        self.ddpm_num_steps = conf.get(
+            "ddim.schedule_params.ddpm_num_steps", 250)
+        self.coef_xt_reg = conf.get("optimize_xt.coef_xt_reg", 0.001)
+        self.coef_xt_reg_decay = conf.get("optimize_xt.coef_xt_reg_decay", 1.0)
+        self.num_iteration_optimize_xt = conf.get(
+            "optimize_xt.num_iteration_optimize_xt", 1
+        )
+        self.lr_xt = conf.get("optimize_xt.lr_xt", 0.001)
+        self.lr_xt_decay = conf.get("optimize_xt.lr_xt_decay", 1.0)
+        self.use_smart_lr_xt_decay = conf.get(
+            "optimize_xt.use_smart_lr_xt_decay", False
+        )
+        self.use_adaptive_lr_xt = conf.get(
+            "optimize_xt.use_adaptive_lr_xt", False)
+        self.mid_interval_num = int(conf.get("optimize_xt.mid_interval_num", 1))
+        if conf.get("ddim.schedule_params.use_timetravel", False):
+            self.steps = ddim_repaint_timesteps(**conf["ddim.schedule_params"])
+        else:
+            self.steps = ddim_timesteps(**conf["ddim.schedule_params"])
+
+        self.mode = conf.get("mode", "inpaint")
+        self.scale = conf.get("scale", 0)
+        self.loss = conf.get("loss", "L2")
+
+        def loss_L2(_x0, _pred_x0, _mask, matrix):
+            ret = torch.sum((_x0 * _mask - _pred_x0 * _mask) ** 2 * matrix)
+            return ret
+        LPIPS_func = lpips.LPIPS(net="alex").to(conf.get("device"))
+        def loss_LPIPS(_x0, _pred_x0, _mask):
+            return LPIPS_func.forward(_x0 * _mask + _pred_x0 * (1 - _mask), _pred_x0)
+        SSIM_func = SSIM()
+        def loss_SSIM(x0, _pred_x0, _mask):
+            return 1-SSIM_func.forward(x0 * _mask, _pred_x0 * _mask)
+        self.loss_L2 = loss_L2
+        self.loss_LPIPS = loss_LPIPS
+        self.loss_SSIM = loss_SSIM
+
+    def p_sample(
+        self,
+        model_fn,
+        x,
+        t,
+        prev_t,
+        model_kwargs,
+        lr_xt,
+        coef_xt_reg,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        index=0,
+        file_number=0,
+        weight_L2=1,
+        weight_LPIPS=0,
+        weight_SSIM=0,
+        sample_dir="",
+        setup="DR2",
+        compensate=False,
+        **kwargs,
+    ):
+        if self.mode == "inpaint":
+            if self.loss == "L2":
+                def loss_fn(_x0, _pred_x0, _mask):
+                    ret = torch.sum((_x0 * _mask - _pred_x0 * _mask) ** 2)
+                    return ret
+        elif self.mode == "super_resolution":
+            size = x.shape[-1]
+            downop = nn.AdaptiveAvgPool2d(
+                (size // self.scale, size // self.scale))
+
+            def loss_fn(_x0, _pred_x0, _mask):
+                down_x0 = downop(_x0)
+                down_pred_x0 = downop(_pred_x0)
+                ret = torch.sum((down_x0 - down_pred_x0) ** 2)
+                return ret
+        else:
+            raise ValueError("Unkown mode: {self.mode}")
+
+        def reg_fn(_origin_xt, _xt):
+            ret = torch.sum((_origin_xt - _xt) ** 2)
+            return ret
+
+        def process_xstart(_x):
+            if denoised_fn is not None:
+                _x = denoised_fn(_x)
+            if clip_denoised:
+                return _x.clamp(-1, 1)
+            return _x
+
+        def get_et(_x, _t):
+            if self.mid_interval_num > 1:
+                res = grad_ckpt(
+                    self._get_et, model_fn, _x, _t, model_kwargs, use_reentrant=False
+                )
+            else:
+                res = self._get_et(model_fn, _x, _t, model_kwargs)
+            return res
+
+        def get_smart_lr_decay_rate(_t, interval_num):
+            int_t = int(_t[0].item())
+            interval = int_t // interval_num
+            steps = (
+                (np.arange(0, interval_num) * interval)
+                .round()[::-1]
+                .copy()
+                .astype(np.int32)
+            )
+            steps = steps.tolist()
+            if steps[0] != int_t:
+                steps.insert(0, int_t)
+            if steps[-1] != 0:
+                steps.append(0)
+
+            ret = 1
+            time_pairs = list(zip(steps[:-1], steps[1:]))
+            for i in range(len(time_pairs)):
+                _cur_t, _prev_t = time_pairs[i]
+                ret *= self.sqrt_recip_alphas_cumprod[_cur_t] * math.sqrt(
+                    self.alphas_cumprod[_prev_t]
+                )
+            return ret
+
+        def multistep_predx0(_x, _et, _t, interval_num):
+            int_t = int(_t[0].item())
+            interval = int_t // interval_num
+            steps = (
+                (np.arange(0, interval_num) * interval)
+                .round()[::-1]
+                .copy()
+                .astype(np.int32)
+            )
+            steps = steps.tolist()
+            if steps[0] != int_t:
+                steps.insert(0, int_t)
+            if steps[-1] != 0:
+                steps.append(0)
+            time_pairs = list(zip(steps[:-1], steps[1:]))
+            x_t = _x
+            for i in range(len(time_pairs)):
+                _cur_t, _prev_t = time_pairs[i]
+                _cur_t = torch.tensor([_cur_t] * _x.shape[0], device=_x.device)
+                _prev_t = torch.tensor(
+                    [_prev_t] * _x.shape[0], device=_x.device)
+                if i != 0:
+                    _et = get_et(x_t, _cur_t)
+                x_t = grad_ckpt(
+                    get_update, x_t, _cur_t, _prev_t, _et, None, use_reentrant=False
+                )
+            return x_t
+
+        def get_predx0(_x, _t, _et, interval_num=1):
+            if interval_num == 1:
+                return process_xstart(self._predict_xstart_from_eps(_x, _t, _et))
+            else:
+                _pred_x0 = grad_ckpt(
+                    multistep_predx0, _x, _et, _t, interval_num, use_reentrant=False
+                )
+                return process_xstart(_pred_x0)
+
+        def get_update(
+            _x,
+            cur_t,
+            _prev_t,
+            _et=None,
+            _pred_x0=None,
+            compensate=False,
+        ):
+            if _et is None:
+                _et = get_et(_x=_x, _t=cur_t)
+            if _pred_x0 is None:
+                _pred_x0 = get_predx0(_x, cur_t, _et, interval_num=1)
+
+            alpha_t = _extract_into_tensor(self.alphas_cumprod, cur_t, _x.shape)
+            alpha_prev = _extract_into_tensor(
+                self.alphas_cumprod, _prev_t, _x.shape)
+            #simgas = torch.sqrt(model_kwargs["known_info"]) * (1-alpha_prev)
+            sigmas = (
+                (250 - index ) / 250 * torch.sqrt(model_kwargs["known_info"] * (1 - alpha_prev)) +
+                index / 250 * torch.sqrt((1 - alpha_prev) / (1 - alpha_t)) * torch.sqrt((1 - alpha_t / alpha_prev))
+            )
+            print(1 - alpha_prev[0][0][0][0])
+                #sigmas = (
+            #    self.ddim_sigma
+            #    * torch.sqrt((1 - alpha_prev) / (1 - alpha_t))
+            #    * torch.sqrt((1 - alpha_t / alpha_prev))
+            #)
+            mean_pred = (
+                _pred_x0 * torch.sqrt(alpha_prev)
+                + torch.sqrt(1 - alpha_prev - sigmas**2) * _et  # dir_xt
+            )
+            noise = noise_like(_x.shape, _x.device, repeat=False)
+            nonzero_mask = (cur_t != 0).float().view(-1,
+                                                     *([1] * (len(_x.shape) - 1)))
+            _x_prev = mean_pred + noise * sigmas * nonzero_mask
+            if compensate:
+                sigmas = torch.sqrt(1 - alpha_prev)
+                return _pred_x0 * torch.sqrt(alpha_prev) + noise * sigmas * nonzero_mask
+            return _x_prev
+
+        B, C = x.shape[:2]
+        assert t.shape == (B,)
+        x0 = model_kwargs["gt"]
+        mask = model_kwargs["gt_keep_mask"]
+
+        def grad_norm(L2, LPIPS):
+            norm_L2 = torch.norm(L2, p=2).item()
+            norm_LPIPS = torch.norm(LPIPS, p=2).item()
+            if norm_L2 == 0:
+                return L2, LPIPS
+            LPIPS = norm_L2 / norm_LPIPS * LPIPS
+            return L2, LPIPS
+        # condition mean
+        if cond_fn is not None:
+            model_fn = self._wrap_model(model_fn)
+            B, C = x.shape[:2]
+            assert t.shape == (B,)
+            model_output = model_fn(x, self._scale_timesteps(t), **model_kwargs)
+            assert model_output.shape == (B, C * 2, *x.shape[2:])
+            _, model_var_values = torch.split(model_output, C, dim=1)
+            min_log = _extract_into_tensor(
+                self.posterior_log_variance_clipped, t, x.shape
+            )
+            max_log = _extract_into_tensor(np.log(self.betas), t, x.shape)
+            frac = (model_var_values + 1) / 2
+            model_log_variance = frac * max_log + (1 - frac) * min_log
+            model_variance = torch.exp(model_log_variance)
+            with torch.enable_grad():
+                gradient = cond_fn(x, self._scale_timesteps(t), **model_kwargs)
+                x = x + model_variance * gradient
+
+        if self.use_smart_lr_xt_decay:
+            lr_xt /= get_smart_lr_decay_rate(t, self.mid_interval_num)
+        # optimize
+        with torch.enable_grad():
+            origin_x = x.clone().detach()
+            x = x.detach().requires_grad_()
+            e_t = get_et(_x=x, _t=t)
+            pred_x0 = get_predx0(
+                _x=x, _t=t, _et=e_t, interval_num=self.mid_interval_num
+            )
+
+            a=weight_L2
+            b=weight_LPIPS
+            c=weight_SSIM
+            prev_loss = a * self.loss_L2(x0, pred_x0, mask, model_kwargs["weight_mask_unknown"])
+            directory = model_kwargs["outdir"] + '/reverse/pred' + str(model_kwargs["image_name"] + '_' + str(file_number))
+            make_dirs(directory)
+            tmp_pred = pred_x0
+            tmp_pred = ((tmp_pred + 1) * 127.5).clamp(0, 255).to(torch.uint8)
+            tmp_pred = tmp_pred.permute(0, 2, 3, 1)
+            tmp_pred = tmp_pred.contiguous().squeeze()
+            tmp_pred = tmp_pred.cpu().numpy()
+            tmp_pred = Image.fromarray(tmp_pred, mode='RGB')
+            full_p2 = os.path.join(directory, 'pre' + '_' + str(index).zfill(6) + '.jpg')
+            tmp_pred.save(full_p2)
+            directory = model_kwargs["outdir"] + '/reverse/x' + str(model_kwargs["image_name"] + '_' + str(file_number))
+            make_dirs(directory)
+            tmp_pred = origin_x
+            tmp_pred = ((tmp_pred + 1) * 127.5).clamp(0, 255).to(torch.uint8)
+            tmp_pred = tmp_pred.permute(0, 2, 3, 1)
+            tmp_pred = tmp_pred.contiguous().squeeze()
+            tmp_pred = tmp_pred.cpu().numpy()
+            tmp_pred = Image.fromarray(tmp_pred, mode='RGB')
+            full_p2 = os.path.join(directory, 'x' + '_' + str(index).zfill(6) + '.jpg')
+            tmp_pred.save(full_p2)
+            logging_info(f"step: {t[0].item()} lr_xt {lr_xt:.8f}")
+            grad_pre_total = torch.zeros_like(x)
+            alpha = 1
+            # if index > 175:
+            #     alpha = 0.5
+            for step in range(self.num_iteration_optimize_xt):
+                #loss_L2 = self.loss_L2(x0, pred_x0, mask, model_kwargs["weight_mask_unknown"])
+                loss_L2 = self.loss_L2(x0, pred_x0, mask, torch.ones_like(model_kwargs["weight_mask_unknown"]))
+                #loss_L2 = self.loss_L2(x0, pred_x0, mask, (model_kwargs["weight_mask_unknown"] * index / 250 + torch.ones_like(model_kwargs["weight_mask_unknown"]) * (250 - index) / 250 ))
+                loss_LPIPS = index / 250 * self.loss_LPIPS(x0, pred_x0, mask)
+                loss_SSIM = self.loss_SSIM(x0, pred_x0, mask)
+                loss_P = coef_xt_reg * reg_fn(origin_x, x)
+                loss = a * loss_L2 + loss_P
+                x_grad_P = torch.autograd.grad(loss_P, x, retain_graph=True, create_graph=False)[0].detach()
+                x_grad_L2 = torch.autograd.grad(loss_L2, x, retain_graph=True, create_graph=False)[0].detach()
+                x_grad_LPIPS = torch.autograd.grad(loss_LPIPS, x, retain_graph=False, create_graph=False)[0].detach()
+                new_x = x - lr_xt * (x_grad_L2 * a + x_grad_P + index / 250 * x_grad_LPIPS * b)
+
+                logging_info(
+                    f"grad norm: {torch.norm(x_grad_L2, p=2).item():.3f} "
+                    f"{torch.norm(x_grad_L2 * mask, p=2).item():.3f} "
+                    f"{torch.norm(x_grad_L2 * (1. - mask), p=2).item():.3f}"
+                )
+                max_iter = 10
+                iter = 0
+                while self.use_adaptive_lr_xt and True:
+                    iter += 1
+                    with torch.no_grad():
+                        e_t = get_et(new_x, _t=t)
+                        pred_x0 = get_predx0(
+                            new_x, _t=t, _et=e_t, interval_num=self.mid_interval_num
+                        )
+                        #new_loss = a * self.loss_L2(x0, pred_x0, mask, model_kwargs["weight_mask_unknown"]) + coef_xt_reg * reg_fn(origin_x, new_x)
+                        new_loss = a * self.loss_L2(x0, pred_x0, mask, torch.ones_like(model_kwargs["weight_mask_unknown"])) + coef_xt_reg * reg_fn(origin_x, new_x)
+                        #new_loss = a * self.loss_L2(x0, pred_x0, mask, (model_kwargs["weight_mask_unknown"] * index / 250 + torch.ones_like(model_kwargs["weight_mask_unknown"]) * (250 - index) / 250 )) + coef_xt_reg * reg_fn(origin_x, new_x)
+                        if (not torch.isnan(new_loss) and new_loss <= loss):
+                            break
+                        elif iter > max_iter:
+                            lr_xt = 0
+                        else:
+                            lr_xt *= 0.8
+                            logging_info(
+                                "Loss too large (%.3lf->%.3lf)! Learning rate decreased to %.5lf."
+                                % (loss.item(), new_loss.item(), lr_xt)
+                            )
+                            del new_x, e_t, pred_x0, new_loss
+                            new_x = x - lr_xt * (x_grad_L2 * a + x_grad_P + index / 250 * x_grad_LPIPS * b)
+                x = new_x.detach().requires_grad_()
+                e_t = get_et(x, _t=t)
+                pred_x0 = get_predx0(
+                    x, _t=t, _et=e_t, interval_num=self.mid_interval_num
+                )
+                del loss, x_grad_L2, x_grad_P
+                torch.cuda.empty_cache()
+
+
+        # after optimize
+        with torch.enable_grad():
+            if compensate:
+                # cam_desire = (((pred_x0 * (1 - mask) + model_kwargs["gt"] * mask) + 1)/2).clamp(0, 1)
+                cam_desire = ((pred_x0 + 1) / 2).clamp(0, 1)
+                cam_surf = ((model_kwargs["gt"] + 1) / 2).clamp(0, 1)
+                cam_desire = compen.back_prop_single((torch.ones_like(cam_desire) * 0.309).to(cam_desire.device),
+                                                     cam_desire, cam_surf, setup_list=setup,model_name="My_PCNet")
+                pred_x0 = (cam_desire * 2 - 1).clamp(-1, 1)
+                directory = model_kwargs["outdir"] + '/reverse/compen' + str(model_kwargs["image_name"] + '_' + str(file_number))
+                make_dirs(directory)
+                tmp_pred = pred_x0
+                tmp_pred = ((tmp_pred + 1) * 127.5).clamp(0, 255).to(torch.uint8)
+                tmp_pred = tmp_pred.permute(0, 2, 3, 1)
+                tmp_pred = tmp_pred.contiguous().squeeze()
+                tmp_pred = tmp_pred.cpu().numpy()
+                tmp_pred = Image.fromarray(tmp_pred, mode='RGB')
+                full_p2 = os.path.join(directory, 'compen' + '_' + str(index).zfill(6) + '.jpg')
+                tmp_pred.save(full_p2)
+                # prev_loss = self.loss_L2(cam_desire, pred_x0, mask, torch.ones_like(model_kwargs["weight_mask_unknown"])).item()
+        with torch.no_grad():
+            new_loss = (a * self.loss_L2(x0, pred_x0, mask, model_kwargs["weight_mask_unknown"])).item()
+            logging_info("Loss Change: %.3lf -> %.3lf" % (prev_loss, new_loss))
+            #new_reg = reg_fn(origin_x, new_x).item()
+            #logging_info("Regularization Change: %.3lf -> %.3lf" % (0, new_reg))
+            pred_x0, e_t, x = pred_x0.detach(), e_t.detach(), x.detach()
+            del origin_x, prev_loss
+            x_prev = get_update(
+                x,
+                t,
+                prev_t,
+                e_t,
+                _pred_x0=pred_x0 if self.mid_interval_num == 1 else None,
+                compensate=compensate,
+            )
+        alpha_prev = _extract_into_tensor(self.alphas_cumprod, t-1, x0.shape)
+        gt_t = x0 * torch.sqrt(alpha_prev) + torch.sqrt(1 - alpha_prev) * torch.randn_like(x0)
+        return {"x": x, "x_prev_overwrite": x_prev * (1-mask) + gt_t * mask, "x_prev": x_prev, "pred_x0": pred_x0, "loss": new_loss}
+
+    def p_sample_loop(
+        self,
+        model_fn,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=True,
+        file_number=0,
+        return_all=False,
+        conf=None,
+        sample_dir="",
+        setup="DR2",
+        **kwargs,
+    ):
+        if device is None:
+            device = next(model_fn.parameters()).device
+        assert isinstance(shape, (tuple, list))
+        if noise is not None:
+            assert not conf["optimize_xt.filter_xT"]
+            img = noise
+        else:
+            xT_shape = (
+                shape
+                if not conf["optimize_xt.filter_xT"]
+                else tuple([20] + list(shape[1:]))
+            )
+            img = torch.randn(xT_shape, device=device)
+
+        if conf["optimize_xt.filter_xT"]:
+            xT_losses = []
+            for img_i in img:
+                xT_losses.append(
+                    self.p_sample(
+                        model_fn,
+                        x=img_i.unsqueeze(0),
+                        t=torch.tensor([self.steps[0]] * 1, device=device),
+                        prev_t=torch.tensor([0] * 1, device=device),
+                        file_number=file_number,
+                        model_kwargs=model_kwargs,
+                        pred_xstart=None,
+                        lr_xt=self.lr_xt,
+                        coef_xt_reg=self.coef_xt_reg,
+                        sample_dir=sample_dir,
+                    )["loss"]
+                )
+            img = img[torch.argsort(torch.tensor(xT_losses))[: shape[0]]]
+
+        time_pairs = list(zip(self.steps[:-1], self.steps[1:]))
+
+        index = 0
+        x_t = img
+        # set up hyper paramer for this run
+        lr_xt = self.lr_xt
+        coef_xt_reg = self.coef_xt_reg
+        loss = None
+        status = None
+        for cur_t, prev_t in tqdm(time_pairs):
+            index += 1
+            if cur_t > prev_t:  # denoise
+                status = "reverse"
+                cur_t = torch.tensor([cur_t] * shape[0], device=device)
+                prev_t = torch.tensor([prev_t] * shape[0], device=device)
+                output = self.p_sample(
+                    model_fn,
+                    x=x_t,
+                    t=cur_t,
+                    prev_t=prev_t,
+                    model_kwargs=model_kwargs,
+                    pred_xstart=None,
+                    lr_xt=lr_xt,
+                    coef_xt_reg=coef_xt_reg,
+					index=index,
+                    weight_L2 = conf["optimize_xt.weight_L2"],
+                    weight_LPIPS=conf["optimize_xt.weight_LPIPS"],
+                    weight_SSIM=conf["optimize_xt.weight_SSIM"],
+                    setup=setup,
+                    compensate=(True if (index % 10 == 0 and index >= 1000) else False),
+                )
+                if conf["overwrite"]:
+                    x_t = output["x_prev_overwrite"]
+                else:
+                    x_t = output["x_prev"]
+                loss = output["loss"]
+                # lr decay
+                if self.lr_xt_decay != 1.0:
+                    logging_info(
+                        "Learning rate of xt decay: %.5lf -> %.5lf."
+                        % (lr_xt, lr_xt * self.lr_xt_decay)
+                    )
+                lr_xt *= self.lr_xt_decay
+                if self.coef_xt_reg_decay != 1.0:
+                    logging_info(
+                        "Coefficient of regularization decay: %.5lf -> %.5lf."
+                        % (coef_xt_reg, coef_xt_reg * self.coef_xt_reg_decay)
+                    )
+                coef_xt_reg *= self.coef_xt_reg_decay
+
+                if conf["debug"]:
+                    from src.python.diffusion.utils import normalize_image, save_grid
 
                     os.makedirs(os.path.join(
                         sample_dir, "middles"), exist_ok=True)

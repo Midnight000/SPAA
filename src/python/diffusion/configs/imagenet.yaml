@@ -8,13 +8,12 @@
 ########################################################################
 ##  basic configs
 ########################################################################
-model_path: ./checkpoints/256x256_diffusion.pt
-classifier_path: ./checkpoints/256x256_classifier.pt
+model_path: ./diffusion/checkpoints/256x256_diffusion_uncond.pt
 dataset_name: imagenet
 dataset_starting_index: -1 # specify the starting index, -1 means 0
 dataset_ending_index: -1 # specify the ending index, -1 means len(dataset)
 mask_type: half
-seed: 42
+seed:
 use_git: false
 n_samples: 1
 n_iter: 1
@@ -26,7 +25,8 @@ debug: false
 missing_info: true
 device: 3
 loss: LPIPS
-overwrite: false
+overwrite: true
+setup_list: pillow1
 
 
 ########################################################################
@@ -58,6 +58,9 @@ optimize_xt:
   mid_interval_num: 1
   optimize_before_time_travel: true
   filter_xT: false
+  weight_L2: 0.5
+  weight_LPIPS: 0.5
+  weight_SSIM: 0
 
 repaint:
   schedule_jump_params:
@@ -102,7 +105,7 @@ mask: ""
 ########################################################################
 cond_y: 
 attention_resolutions: 32,16,8
-class_cond: true
+class_cond: false
 diffusion_steps: 1000
 learn_sigma: true
 noise_schedule: linear
@@ -115,7 +118,7 @@ use_fp16: true
 use_scale_shift_norm: true
 classifier_scale: 1.0
 lr_kernel_n_std: 2
-num_samples: 100
+num_samples: 1
 show_progress: true
 timestep_respacing: '250'
 use_kl: false
@@ -137,3 +140,4 @@ use_new_attention_order: false
 clip_denoised: true
 use_ddim: false
 image_size: 256
+respace_interpolate: false

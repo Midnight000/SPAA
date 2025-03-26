@@ -52,58 +52,23 @@ import torch.nn.functional as F
 import PIL.Image as Image
 from torchvision import transforms
 
-import pytorch_ssim
-import My_models as models
+from src.python.PCNet import pytorch_ssim
+import src.python.My_PCNet.My_models as models
 # import models
-from img_proc import center_crop as cc
 from src.python.My_PCNet.utils import plot_montage
-from src.python.My_PCNet import utils as ut
+import src.python.My_PCNet.utils as ut
 from os.path import join, abspath
 from src.python.My_PCNet.utils import print_sys_info, set_torch_reproducibility
-from My_train_network import get_model_train_cfg, load_mask_info
+from src.python.My_PCNet.My_train_network import get_model_train_cfg, load_mask_info
 
 print_sys_info()
-
-# [reproducibility] did not see significantly differences when set to True, but True is significantly slower.
+device = "cuda"
 set_torch_reproducibility(False)
 
+# [reproducibility] did not see significantly differences when set to True, but True is significantly slower.
+
 # training configs
-data_root = abspath(join(os.getcwd(), '../../../data'))
-setup_list = [
-    'DR',
-    # 'DR2',
-    # 'lotion',
-    # 'soccer',
-    # 'paper_towel',
-    # 'volleyball',
-    # 'backpack',
-    # 'hamper',
-    # 'bucket',
-    # 'coffee_mug',
-    # 'banana',
-    # 'book_jacket',
-    # 'remote_control',
-    # 'mixing_bowl',
-    # 'pillow',
-]
-# pcnet_cfg = get_model_train_cfg(['My_PCNet'], data_root, setup_list, load_pretrained=True, plot_on=True)
-pcnet_cfg = get_model_train_cfg(['My_PCNet_no_mask'], data_root, setup_list, load_pretrained=True, plot_on=True)
-# pcnet_cfg = get_model_train_cfg(['My_PCNet_no_rough'], data_root, setup_list, load_pretrained=True, plot_on=True)
-# pcnet_cfg = get_model_train_cfg(['My_PCNet_no_mask_no_rough'], data_root, setup_list, load_pretrained=True, plot_on=True)
 
-# pcnet_cfg = get_model_train_cfg(['PCNet'], data_root, setup_list, load_pretrained=True, plot_on=True)
-# pcnet_cfg = get_model_train_cfg(['PCNet_no_mask'], data_root, setup_list, load_pretrained=True, plot_on=True)
-# pcnet_cfg = get_model_train_cfg(['PCNet_no_rough'], data_root, setup_list, load_pretrained=True, plot_on=True)
-# pcnet_cfg = get_model_train_cfg(['PCNet_no_mask_no_rough'], data_root, setup_list, load_pretrained=True, plot_on=True)
-
-
-# stats for different setups
-data_root = pcnet_cfg.data_root
-# set PyTorch device to GPU
-device = torch.device(pcnet_cfg.device)
-
-# log
-ret, log_txt_filename, log_xls_filename = ut.init_log_file(join(data_root, '../log'))
 
 smooth_l1_fun = nn.SmoothL1Loss(beta=1.0)
 l1_fun = nn.L1Loss()
@@ -134,25 +99,18 @@ def tv_loss(image_tensor):
     loss = tv_x + tv_y
     return loss
 
-# train and evaluate all setups
-def back_prop_single(prj_img, cam_desire, cam_surf):
-    setup_path = join(data_root , 'setups', pcnet_cfg.setup_list[0])
-    # load training and validation data
+def load_model(model_name, cam_surf, setup_list = None):
+    data_root = abspath(join(os.getcwd(), '../../data'))
+    if setup_list == None:
+        print('setup_list=None')
+        exit(1)
+    # setup_list = [
+    #     'pillow1',
+    # ]
+    pcnet_cfg = get_model_train_cfg(['My_PCNet_no_mask'], data_root, setup_list, load_pretrained=True, plot_on=True)
+    data_root = pcnet_cfg.data_root
     cam_mask, mask_corners, setup_info = load_mask_info(data_root, pcnet_cfg.setup_list[0])
     pcnet_cfg.setup_info = setup_info
-
-    # center crop, decide whether PCNet output is center cropped square image (classifier_crop_sz) or not (cam_im_sz)
-    if pcnet_cfg.center_crop:
-        cp_sz = setup_info.classifier_crop_sz
-        prj_img = cc(prj_img, cp_sz)
-        cam_desire = cc(cam_desire, cp_sz)
-        cam_surf = cc(cam_surf, cp_sz)
-
-    # surface image for training and validation
-    # prj_img = prj_img.to(device)
-    # cam_desire = cam_desire.to(device)
-    # cam_surf = cam_surf.to(device)
-
 
     # stats for different models
     pcnet_cfg.model_name = pcnet_cfg.model_list[0].replace('/', '_')
@@ -167,30 +125,40 @@ def back_prop_single(prj_img, cam_desire, cam_surf):
 
     # create a ShadingNetSPAA model
     shading_net = models.ShadingNetSPAA(use_rough='no_rough' not in pcnet_cfg.model_name)
-    if torch.cuda.device_count() >= 1: shading_net = nn.DataParallel(shading_net, device_ids=pcnet_cfg.device_ids).to(device)
+    if torch.cuda.device_count() >= 1: shading_net = nn.DataParallel(shading_net, device_ids=pcnet_cfg.device_ids).to(
+        device)
 
     # create a WarpingNet model
-    warping_net = models.WarpingNet(out_size=cam_surf.shape[-2:], with_refine='w/o_refine' not in pcnet_cfg.model_name)  # warp prj to cam raw
+    warping_net = models.WarpingNet(out_size=cam_surf.shape[-2:],
+                                    with_refine='w/o_refine' not in pcnet_cfg.model_name)  # warp prj to cam raw
 
     # initialize WarpingNet with affine transformation (remember grid_sample is inverse warp, so src is the desired warp
-    src_pts    = np.array([[-1, -1], [1, -1], [1, 1]]).astype(np.float32)
-    dst_pts    = np.array(mask_corners[0:3]).astype(np.float32)
+    src_pts = np.array([[-1, -1], [1, -1], [1, 1]]).astype(np.float32)
+    dst_pts = np.array(mask_corners[0:3]).astype(np.float32)
     affine_mat = torch.Tensor(cv.getAffineTransform(dst_pts, src_pts))  # prj -> cam
     warping_net.set_affine(affine_mat.flatten())
-    if torch.cuda.device_count() >= 1: warping_net = nn.DataParallel(warping_net, device_ids=pcnet_cfg.device_ids).to(device)
+    if torch.cuda.device_count() >= 1: warping_net = nn.DataParallel(warping_net, device_ids=pcnet_cfg.device_ids).to(
+        device)
 
     # create a PCNet model using WarpingNet and ShadingNetSPAA
-    pcnet = models.PCNet(cam_mask.float(), warping_net, shading_net, fix_shading_net=False, use_mask='no_mask' not in pcnet_cfg.model_name,
+    pcnet = models.PCNet(cam_mask.float(), warping_net, shading_net, fix_shading_net=False,
+                         use_mask='no_mask' not in pcnet_cfg.model_name,
                          use_rough='no_rough' not in pcnet_cfg.model_name)
     if torch.cuda.device_count() >= 1: pcnet = nn.DataParallel(pcnet, device_ids=pcnet_cfg.device_ids).to(device)
 
-    print(f'------------------------------------ Loading pretrained {pcnet_cfg.model_name:s} ---------------------------')
+    print(
+        f'------------------------------------ Loading pretrained {pcnet_cfg.model_name:s} ---------------------------')
     checkpoint_filename = join(data_root, '../checkpoint', ut.opt_to_string(pcnet_cfg) + '.pth')
     pcnet.load_state_dict(torch.load(checkpoint_filename))
+    del warping_net
+    return pcnet
+# train and evaluate all setups
+def back_prop_single(prj_img, cam_desire, cam_surf, setup_list = 'DR2', model_name="My_PCNet", number=0):
+    # load training and validation data
+
 
     # [validation phase] after training we evaluate and save results
-    print('------------------------------------ Start testing {:s} ---------------------------'.format(pcnet_cfg.model_name))
-    torch.cuda.empty_cache()
+    print('------------------------------------ Start testing ---------------------------')
 
     # compensate and save images
     ori_desire_test = cam_desire.detach().clone()
@@ -199,21 +167,10 @@ def back_prop_single(prj_img, cam_desire, cam_surf):
 
     # simplify CompenNet++
     # compen_nest_pp.module.simplify(cam_surf_test[0, ...].unsqueeze(0))
-
+    model = load_model("My_PCNet", cam_surf, setup_list)
     # compensate using CompenNet++
-    pcnet.eval()
-    if pcnet_cfg['plot_on']:
-        title = ut.opt_to_string(pcnet_cfg)
-        # intialize visdom figures
-        # vis_curve_fig = vis.line(X=np.array([0]), Y=np.array([0]), name='origin',
-        #                          opts=dict(width=1300, height=500, markers=True, markersize=3,
-        #                                    layoutopts=dict(
-        #                                        plotly=dict(title={'text': title, 'font': {'size': 24}},
-        #                                                    font={'family': 'Arial', 'size': 20},
-        #                                                    hoverlabel={'font': {'size': 20}},
-        #                                                    xaxis={'title': 'Iteration'},
-        #                                                    yaxis={'title': 'Metrics',
-        #                                                           'hoverformat': '.4f'}))))
+    model.eval()
+    pred = None
     iters = 0
     lambda_l1 = 1
     lambda_ssim = 1
@@ -228,7 +185,7 @@ def back_prop_single(prj_img, cam_desire, cam_surf):
         # if iters % 50 == 0:
         #     lambda_tv *= 1.4
 
-        pred = pcnet(opt_input, cam_surf)
+        pred = model(opt_input, cam_surf)
         loss_l1 = l1_fun(pred, ori_desire_test)
         loss_ssim = 1 * (1 - ssim_fun(pred, ori_desire_test))
         loss_tv = tv_loss(opt_input)
@@ -241,8 +198,8 @@ def back_prop_single(prj_img, cam_desire, cam_surf):
 
         optimizer.zero_grad()
         loss_diff.backward()
-        vis_valid_fig = plot_montage( torch.cat((ori_desire_test, F.interpolate(opt_input, size=(240, 320), mode='bilinear', align_corners=False), pred), dim=0),
-                                    win=vis_valid_fig, title='[Valid]')
+        vis_valid_fig = plot_montage( torch.cat((ori_desire_test, opt_input, pred), dim=0),
+                                    win=vis_valid_fig, title='step:' + str(number))
         # append_data_point(iters, loss_diff.detach().item(), vis_curve_fig,
         #                 'loss_compennest++')
         optimizer.step()
@@ -260,16 +217,16 @@ def back_prop_single(prj_img, cam_desire, cam_surf):
     # print('Compensation images saved to ' + prj_cmp_path)
 
     # clear cache
-    del pcnet, warping_net
+    del model
     torch.cuda.empty_cache()
     print('-------------------------------------- Done! ---------------------------\n')
+    return pred
 
 if __name__ == "__main__":
     transform = transforms.ToTensor()  # 将图片转换为Tensor
-    prj_img = transform(Image.open('../../../tep/' + setup_list[0] + '/prj.png')).to(device).unsqueeze(0)
-    cam_desire = transform(Image.open('../../../tep/' + setup_list[0] + '/desire.png').convert("RGB")).to(device).unsqueeze(0)
-    cam_surf = transform(Image.open('../../../tep/' + setup_list[0] + '/surf.png')).to(device).unsqueeze(0)
+    prj_img = transform(Image.open('../../tep/' + "DR3" + '/prj.png')).to(device).unsqueeze(0)
+    cam_desire = transform(Image.open('../../tep/' + "DR3" + '/desire.png').convert("RGB")).to(device).unsqueeze(0)
+    cam_surf = transform(Image.open('../../tep/' + "DR3" + '/surf.png')).to(device).unsqueeze(0)
     prj_img = (torch.ones_like(cam_desire)*0.309).to(device)
 
-    back_prop_single(prj_img, cam_desire, cam_surf)
-
+    back_prop_single(prj_img, cam_desire, cam_surf, "My_PCNet")

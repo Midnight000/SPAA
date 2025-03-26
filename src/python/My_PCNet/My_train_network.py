@@ -15,11 +15,12 @@ import torch.nn.functional as F
 import torch.optim as optim
 import time
 
-import pytorch_ssim
-import My_models as models
+import src.python.My_PCNet.pytorch_ssim as pytorch_ssim
+import src.python.My_PCNet.My_models as models
 # import My_simple_models as models
 # import models
 from src.python.My_PCNet.img_proc import center_crop as cc
+from src.python.My_PCNet.img_proc import resize as resi
 from src.python.My_PCNet import img_proc, utils as ut
 from src.python.My_PCNet.utils import vis, plot_montage, append_data_point
 from omegaconf import OmegaConf, DictConfig
@@ -503,7 +504,7 @@ def get_model_train_cfg(model_list, data_root=None, setup_list=None, device_ids=
     cfg_default.device             = 'cuda'
     cfg_default.device_ids         = device_ids
     cfg_default.load_pretrained    = load_pretrained
-    cfg_default.max_iters          = 6000
+    cfg_default.max_iters          = 2000
     cfg_default.batch_size         = 24
     cfg_default.lr                 = 1e-3
     cfg_default.lr_drop_ratio      = 0.2
@@ -516,11 +517,11 @@ def get_model_train_cfg(model_list, data_root=None, setup_list=None, device_ids=
 
     if single:                     # single model, no list
         cfg_default.model_name     = model_list[0]
-        cfg_default.num_train      = 600
+        cfg_default.num_train      = 500
         cfg_default.loss           = 'l1+ssim'
     else:
         cfg_default.model_list     = model_list
-        cfg_default.num_train_list = [600]
+        cfg_default.num_train_list = [500]
         cfg_default.loss_list      = ['l1+ssim']
 
     return cfg_default
@@ -545,11 +546,11 @@ def train_eval_pcnet(cfg_default):
 
         # center crop, decide whether PCNet output is center cropped square image (classifier_crop_sz) or not (cam_im_sz)
         if cfg_default.center_crop:
-            cp_sz = setup_info.classifier_crop_sz
-            cam_scene = cc(cam_scene, cp_sz)
-            cam_train = cc(cam_train, cp_sz)
-            cam_valid = cc(cam_valid, cp_sz)
-            cam_mask  = cc(cam_mask , cp_sz)
+            cp_sz = tuple(setup_info.classifier_crop_sz)
+            cam_scene = resi(cam_scene, (256,256))
+            cam_train = resi(cam_train, (256,256))
+            cam_valid = resi(cam_valid, (256,256))
+            cam_mask  = resi(cam_mask.float() , (256,256)).bool()
 
         # surface image for training and validation
         cam_scene = cam_scene.to(device)

@@ -7,6 +7,6 @@ checkpoint
 log
 /data/
 /src/python/diffusion/datasets/
-/eval_SPAA/
 /tep/
 /src/python/diffusion/checkpoints/
+/src/python/datasets/

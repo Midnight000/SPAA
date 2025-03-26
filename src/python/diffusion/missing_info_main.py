@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 
 import numpy as np
 import torch
@@ -7,8 +8,8 @@ from sklearn.neighbors import NearestNeighbors
 from tqdm import tqdm
 from PIL import Image
 
-from datasets import load_lama_celebahq, load_imagenet, load_test
-from datasets.utils import normalize
+from src.python.diffusion.datasets.utils import normalize
+from src.python.diffusion.datasets import load_lama_celebahq, load_imagenet, load_test
 from guided_diffusion import (
     DDIMSampler,
     O_DDIMSampler,
@@ -16,6 +17,7 @@ from guided_diffusion import (
     DDRMSampler,
     DPSSampler,
     Info_O_DDIMSampler,
+    Test_DDIMSampler
 )
 from guided_diffusion import dist_util
 from guided_diffusion.ddim import R_DDIMSampler
@@ -50,6 +52,7 @@ def prepare_model(algorithm, conf, device):
         "ddrm": DDRMSampler,
         "dps": DPSSampler,
         "info_o_ddim": Info_O_DDIMSampler,
+        "test": Test_DDIMSampler,
     }
     sampler_cls = SAMPLER_CLS[algorithm]
     sampler = create_gaussian_diffusion(
@@ -86,12 +89,12 @@ def prepare_classifier(conf, device):
 
 
 def prepare_data(
-        dataset_name, mask_type="half", dataset_starting_index=-1, dataset_ending_index=-1
+        dataset_name, mask_type="half", dataset_starting_index=-1, dataset_ending_index=-1, maxlen=100, split='DR2'
 ):
     if dataset_name == "celebahq":
         datas = load_lama_celebahq(mask_type=mask_type)
     elif dataset_name == "imagenet":
-        datas = load_imagenet(mask_type=mask_type)
+        datas = load_imagenet(mask_type=mask_type, max_len=maxlen, split=split)
     elif dataset_name == "imagenet64":
         datas = load_imagenet(mask_type=mask_type, shape=(64, 64))
     elif dataset_name == "imagenet128":
@@ -126,7 +129,7 @@ def main():
     ###################################################################################
     # prepare config, logger and recorder
     ###################################################################################
-    config = Config(default_config_file="configs/celebahq.yaml", use_argparse=True)
+    config = Config(default_config_file="diffusion/configs/imagenet.yaml", use_argparse=True)
     config.show()
     torch.cuda.set_device(config.device)
 
@@ -138,7 +141,7 @@ def main():
         initial_record=config,
         use_git=config.use_git,
     )
-    set_random_seed(config.seed, deterministic=False, no_torch=False, no_tf=True)
+    set_random_seed(random.randint(0,100000000), deterministic=False, no_torch=False, no_tf=True)
 
     ###################################################################################
     # prepare data
@@ -149,6 +152,8 @@ def main():
             config.mask_type,
             config.dataset_starting_index,
             config.dataset_ending_index,
+            maxlen=config.num_samples,
+            split=config.setup_list,
         )
     else:
         # NOTE: the model should accepet this input image size
@@ -192,7 +197,7 @@ def main():
         if config.class_cond:
             image, mask, image_name, class_id = data
         else:
-            image, mask, image_name = data
+            image, mask, image_name, class_id= data
             class_id = None
         # prepare save dir
         outpath = os.path.join(config.outdir, image_name)
@@ -293,38 +298,41 @@ def main():
                 )
             logging_info("Results exists. Skip!")
         else:
-            # sample images
-            samples = []
-            for n in range(config.n_iter):
-                timer.start()
-                result = sampler.p_sample_loop(
-                    model_fn,
-                    shape=shape,
-                    model_kwargs=model_kwargs,
-                    cond_fn=cond_fn,
-                    device=device,
-                    progress=True,
-                    return_all=True,
-                    conf=config,
-                    sample_dir=outpath if config["debug"] else None,
-                )
-                timer.end()
-
-                for metric in METRICS.values():
-                    metric.update(result["sample"], batch["image"])
-
-                if "loss" in result.keys() and result["loss"] is not None:
-                    recorder.add_with_logging(
-                        key=f"loss_{image_name}_{n}", value=result["loss"]
+            for setup in config.setup_list:
+                # sample images
+                samples = []
+                for n in range(config.n_iter):
+                    timer.start()
+                    result = sampler.p_sample_loop(
+                        model_fn,
+                        shape=shape,
+                        model_kwargs=model_kwargs,
+                        cond_fn=cond_fn,
+                        device=device,
+                        progress=True,
+                        return_all=True,
+                        conf=config,
+                        file_number=n,
+                        setup=setup,
+                        sample_dir=outpath if config["debug"] else None,
                     )
-                    final_loss.append(result["loss"])
-                else:
-                    final_loss.append(None)
+                    timer.end()
 
-                inpainted = normalize_image(result["sample"])
-                samples.append(inpainted.detach().cpu())
+                    for metric in METRICS.values():
+                        metric.update(result["sample"], batch["image"])
 
-            samples = torch.cat(samples)
+                    if "loss" in result.keys() and result["loss"] is not None:
+                        recorder.add_with_logging(
+                            key=f"loss_{image_name}_{n}", value=result["loss"]
+                        )
+                        final_loss.append(result["loss"])
+                    else:
+                        final_loss.append(None)
+
+                    inpainted = normalize_image(result["sample"])
+                    samples.append(inpainted.detach().cpu())
+
+                samples = torch.cat(samples)
 
             # save images
             # save gt images

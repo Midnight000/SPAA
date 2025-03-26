@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 import copy
-import pytorch_tps
+from src.python.My_PCNet import pytorch_tps
 
 def smooth_clamp(x, min, max):
     scale = max - min
