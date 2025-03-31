@@ -129,7 +129,7 @@ def main():
     ###################################################################################
     # prepare config, logger and recorder
     ###################################################################################
-    config = Config(default_config_file="src/python/diffusion/configs/imagenet.yaml", use_argparse=True)
+    config = Config(default_config_file="configs/imagenet.yaml", use_argparse=True)
     config.show()
     torch.cuda.set_device(config.device)
 

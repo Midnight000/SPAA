@@ -8,7 +8,7 @@
 ########################################################################
 ##  basic configs
 ########################################################################
-model_path: ./src/python/diffusion/checkpoints/256x256_diffusion_uncond.pt
+model_path: checkpoints/256x256_diffusion_uncond.pt
 dataset_name: imagenet
 dataset_starting_index: -1 # specify the starting index, -1 means 0
 dataset_ending_index: -1 # specify the ending index, -1 means len(dataset)
