@@ -1543,7 +1543,8 @@ class Test_DDIMSampler(DDIMSampler):
             b=weight_LPIPS
             c=weight_SSIM
             prev_loss = a * self.loss_L2(x0, pred_x0, mask, model_kwargs["weight_mask_unknown"])
-            directory = model_kwargs["outdir"] + '/reverse/pred' + str(model_kwargs["image_name"] + '_' + str(file_number))
+            directory = os.path.join(model_kwargs["outdir"], setup, str(model_kwargs["start_index"]) + '_' + str(model_kwargs["interval_index"]), 'reverse', 'pred' + str(model_kwargs["image_name"]), )
+            # directory = model_kwargs["outdir"] + '/reverse/pred' + str(model_kwargs["image_name"] + '_' + str(file_number))
             make_dirs(directory)
             tmp_pred = pred_x0
             tmp_pred = ((tmp_pred + 1) * 127.5).clamp(0, 255).to(torch.uint8)
@@ -1553,7 +1554,8 @@ class Test_DDIMSampler(DDIMSampler):
             tmp_pred = Image.fromarray(tmp_pred, mode='RGB')
             full_p2 = os.path.join(directory, 'pre' + '_' + str(index).zfill(6) + '.jpg')
             tmp_pred.save(full_p2)
-            directory = model_kwargs["outdir"] + '/reverse/x' + str(model_kwargs["image_name"] + '_' + str(file_number))
+            directory = os.path.join(model_kwargs["outdir"], setup, str(model_kwargs["start_index"]) + '_' + str(model_kwargs["interval_index"]), 'reverse', 'x' + str(model_kwargs["image_name"]), )
+            # directory = model_kwargs["outdir"] + '/reverse/x' + str(model_kwargs["image_name"] + '_' + str(file_number))
             make_dirs(directory)
             tmp_pred = origin_x
             tmp_pred = ((tmp_pred + 1) * 127.5).clamp(0, 255).to(torch.uint8)

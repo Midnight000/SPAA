@@ -38,7 +38,7 @@ def normalize_arr(arr_image):
 def load_imagenet(
     offset=0, max_len=100, shape=(256, 256), mask_type="half", split="DR2"
 ):
-    gt_dir = os.path.join(os.getcwd(), f"./datasets/{split}/gt")
+    gt_dir = os.path.join(os.getcwd(), f"src/python/datasets/{split}/gt")
     gt_paths = _list_image_files_recursively(gt_dir)
     gt_paths.sort()
 
@@ -47,7 +47,7 @@ def load_imagenet(
     )
     # rawlabels = json.load(open(os.path.join(gt_dir, f"../val_label.json")))
     labels = {}
-    mask_dir = os.path.join(os.getcwd(), f"./datasets/{split}/mask")
+    mask_dir = os.path.join(os.getcwd(), f"src/python/datasets/{split}/mask")
     mask_paths = _list_image_files_recursively(mask_dir)
     mask_paths.sort()
 

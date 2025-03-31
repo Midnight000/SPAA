@@ -129,7 +129,7 @@ def main():
     ###################################################################################
     # prepare config, logger and recorder
     ###################################################################################
-    config = Config(default_config_file="diffusion/configs/imagenet.yaml", use_argparse=True)
+    config = Config(default_config_file="src/python/diffusion/configs/imagenet.yaml", use_argparse=True)
     config.show()
     torch.cuda.set_device(config.device)
 
@@ -201,7 +201,7 @@ def main():
                 image, mask, image_name, class_id= data
                 class_id = None
             # prepare save dir
-            outpath = os.path.join(config.outdir, image_name, str(config.start_index) + '_' + str(config.interval_index))
+            outpath = os.path.join(config.outdir, setup, str(config.start_index) + '_' + str(config.interval_index), image_name)
             os.makedirs(outpath, exist_ok=True)
             sample_path = os.path.join(outpath, "samples")
             os.makedirs(sample_path, exist_ok=True)
@@ -215,6 +215,8 @@ def main():
                 "gt": batch["image"].repeat(batch_size, 1, 1, 1),
                 "gt_keep_mask": batch["mask"].repeat(batch_size, 1, 1, 1),
                 "outdir": config.outdir,
+                "start_index": config.start_index,
+                "interval_index": config.interval_index,
             }
             if config.missing_info:
                 mask = model_kwargs["gt_keep_mask"]
@@ -333,7 +335,9 @@ def main():
                     samples.append(inpainted.detach().cpu())
 
                 samples = torch.cat(samples)
-
+                summary_path = os.path.join(config.outdir, setup, str(config.start_index) + '_' + str(config.interval_index), "summary")
+                os.makedirs(summary_path, exist_ok=True)
+                save_grid(samples, os.path.join(summary_path, image_name + '.png'), nrow=batch_size,)
                 # save images
                 # save gt images
                 save_grid(normalize_image(batch["image"]), os.path.join(outpath, f"gt.png"))

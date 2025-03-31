@@ -8,7 +8,7 @@
 ########################################################################
 ##  basic configs
 ########################################################################
-model_path: ./diffusion/checkpoints/256x256_diffusion_uncond.pt
+model_path: ./src/python/diffusion/checkpoints/256x256_diffusion_uncond.pt
 dataset_name: imagenet
 dataset_starting_index: -1 # specify the starting index, -1 means 0
 dataset_ending_index: -1 # specify the ending index, -1 means len(dataset)
@@ -121,7 +121,7 @@ use_fp16: true
 use_scale_shift_norm: true
 classifier_scale: 1.0
 lr_kernel_n_std: 2
-num_samples: 1
+num_samples: 10
 show_progress: true
 timestep_respacing: '250'
 use_kl: false
