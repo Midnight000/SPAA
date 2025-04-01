@@ -1478,7 +1478,6 @@ class Test_DDIMSampler(DDIMSampler):
                 (250 - index ) / 250 * torch.sqrt(model_kwargs["known_info"] * (1 - alpha_prev)) +
                 index / 250 * torch.sqrt((1 - alpha_prev) / (1 - alpha_t)) * torch.sqrt((1 - alpha_t / alpha_prev))
             )
-            print(1 - alpha_prev[0][0][0][0])
                 #sigmas = (
             #    self.ddim_sigma
             #    * torch.sqrt((1 - alpha_prev) / (1 - alpha_t))
@@ -1538,13 +1537,11 @@ class Test_DDIMSampler(DDIMSampler):
             pred_x0 = get_predx0(
                 _x=x, _t=t, _et=e_t, interval_num=self.mid_interval_num
             )
-
             a=weight_L2
             b=weight_LPIPS
             c=weight_SSIM
             prev_loss = a * self.loss_L2(x0, pred_x0, mask, model_kwargs["weight_mask_unknown"])
             directory = os.path.join(model_kwargs["outdir"], setup, str(model_kwargs["start_index"]) + '_' + str(model_kwargs["interval_index"]), 'reverse', 'pred' + str(model_kwargs["image_name"]), )
-            # directory = model_kwargs["outdir"] + '/reverse/pred' + str(model_kwargs["image_name"] + '_' + str(file_number))
             make_dirs(directory)
             tmp_pred = pred_x0
             tmp_pred = ((tmp_pred + 1) * 127.5).clamp(0, 255).to(torch.uint8)
@@ -1555,7 +1552,6 @@ class Test_DDIMSampler(DDIMSampler):
             full_p2 = os.path.join(directory, 'pre' + '_' + str(index).zfill(6) + '.jpg')
             tmp_pred.save(full_p2)
             directory = os.path.join(model_kwargs["outdir"], setup, str(model_kwargs["start_index"]) + '_' + str(model_kwargs["interval_index"]), 'reverse', 'x' + str(model_kwargs["image_name"]), )
-            # directory = model_kwargs["outdir"] + '/reverse/x' + str(model_kwargs["image_name"] + '_' + str(file_number))
             make_dirs(directory)
             tmp_pred = origin_x
             tmp_pred = ((tmp_pred + 1) * 127.5).clamp(0, 255).to(torch.uint8)
