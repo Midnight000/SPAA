@@ -4,6 +4,8 @@ import random
 
 import numpy as np
 import torch
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 from sklearn.neighbors import NearestNeighbors
 from tqdm import tqdm
 from PIL import Image
@@ -68,7 +70,6 @@ def prepare_model(algorithm, conf, device):
         ), strict=False
     )
     unet.to(device)
-    unet = torch.compile(unet)
     if conf.use_fp16:
         unet.convert_to_fp16()
     unet.eval()
