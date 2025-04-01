@@ -70,7 +70,7 @@ set_torch_reproducibility(False)
 # training configs
 data_root = abspath(join(os.getcwd(), '../../../data'))
 setup_list = [
-    'DR',
+    # 'DR',
     # 'DR2',
     # 'lotion',
     # 'soccer',
@@ -85,6 +85,7 @@ setup_list = [
     # 'remote_control',
     # 'mixing_bowl',
     # 'pillow',
+    'lavander1',
 ]
 # pcnet_cfg = get_model_train_cfg(['My_PCNet'], data_root, setup_list, load_pretrained=True, plot_on=True)
 pcnet_cfg = get_model_train_cfg(['My_PCNet_no_mask'], data_root, setup_list, load_pretrained=True, plot_on=True)
