@@ -198,8 +198,8 @@ def back_prop_single(prj_img, cam_desire, cam_surf, setup_list = 'DR2', model_na
 
         optimizer.zero_grad()
         loss_diff.backward()
-        vis_valid_fig = plot_montage( torch.cat((ori_desire_test, opt_input, pred), dim=0),
-                                    win=vis_valid_fig, title='step:' + str(number))
+        # vis_valid_fig = plot_montage( torch.cat((ori_desire_test, opt_input, pred), dim=0),
+        #                             win=vis_valid_fig, title='step:' + str(number))
         # append_data_point(iters, loss_diff.detach().item(), vis_curve_fig,
         #                 'loss_compennest++')
         optimizer.step()
