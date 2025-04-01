@@ -68,6 +68,7 @@ def prepare_model(algorithm, conf, device):
         ), strict=False
     )
     unet.to(device)
+    unet = torch.compile(unet)
     if conf.use_fp16:
         unet.convert_to_fp16()
     unet.eval()
