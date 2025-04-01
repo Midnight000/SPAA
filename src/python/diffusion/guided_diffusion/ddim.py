@@ -1553,7 +1553,7 @@ class Test_DDIMSampler(DDIMSampler):
             tmp_pred = tmp_pred.cpu().numpy()
             tmp_pred = Image.fromarray(tmp_pred, mode='RGB')
             full_p2 = os.path.join(directory, 'pre' + '_' + str(index).zfill(6) + '.jpg')
-            # tmp_pred.save(full_p2)
+            tmp_pred.save(full_p2)
             directory = os.path.join(model_kwargs["outdir"], setup, str(model_kwargs["start_index"]) + '_' + str(model_kwargs["interval_index"]), 'reverse', 'x' + str(model_kwargs["image_name"]), )
             # directory = model_kwargs["outdir"] + '/reverse/x' + str(model_kwargs["image_name"] + '_' + str(file_number))
             make_dirs(directory)
@@ -1564,7 +1564,7 @@ class Test_DDIMSampler(DDIMSampler):
             tmp_pred = tmp_pred.cpu().numpy()
             tmp_pred = Image.fromarray(tmp_pred, mode='RGB')
             full_p2 = os.path.join(directory, 'x' + '_' + str(index).zfill(6) + '.jpg')
-            # tmp_pred.save(full_p2)
+            tmp_pred.save(full_p2)
             logging_info(f"step: {t[0].item()} lr_xt {lr_xt:.8f}")
             grad_pre_total = torch.zeros_like(x)
             alpha = 1
@@ -1641,7 +1641,7 @@ class Test_DDIMSampler(DDIMSampler):
                 tmp_pred = tmp_pred.cpu().numpy()
                 tmp_pred = Image.fromarray(tmp_pred, mode='RGB')
                 full_p2 = os.path.join(directory, 'compen' + '_' + str(index).zfill(6) + '.jpg')
-                # tmp_pred.save(full_p2)
+                tmp_pred.save(full_p2)
                 # prev_loss = self.loss_L2(cam_desire, pred_x0, mask, torch.ones_like(model_kwargs["weight_mask_unknown"])).item()
         with torch.no_grad():
             new_loss = (a * self.loss_L2(x0, pred_x0, mask, model_kwargs["weight_mask_unknown"])).item()
