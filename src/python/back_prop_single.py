@@ -170,6 +170,7 @@ def back_prop_single(prj_img, cam_desire, cam_surf, setup_list = 'DR2', model_na
     model = load_model("My_PCNet", cam_surf, setup_list)
     # compensate using CompenNet++
     model.eval()
+    print(model.device_ids)
     pred = None
     iters = 0
     lambda_l1 = 1
