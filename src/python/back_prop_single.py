@@ -224,9 +224,9 @@ def back_prop_single(prj_img, cam_desire, cam_surf, setup_list = 'DR2', model_na
 
 if __name__ == "__main__":
     transform = transforms.ToTensor()  # 将图片转换为Tensor
-    prj_img = transform(Image.open('../../tep/' + "DR3" + '/prj.png')).to(device).unsqueeze(0)
-    cam_desire = transform(Image.open('../../tep/' + "DR3" + '/desire.png').convert("RGB")).to(device).unsqueeze(0)
-    cam_surf = transform(Image.open('../../tep/' + "DR3" + '/surf.png')).to(device).unsqueeze(0)
+    prj_img = transform(Image.open('../../../tep/' + "lavander1" + '/prj.png')).to(device).unsqueeze(0)
+    cam_desire = transform(Image.open('../../../tep/' + "lavander1" + '/desire.png').convert("RGB")).to(device).unsqueeze(0)
+    cam_surf = transform(Image.open('../../../tep/' + "lavander1" + '/surf.png')).to(device).unsqueeze(0)
     prj_img = (torch.ones_like(cam_desire)*0.309).to(device)
 
-    back_prop_single(prj_img, cam_desire, cam_surf, "My_PCNet")
+    back_prop_single(prj_img, cam_desire, cam_surf, setup_list="lavander1",model_name="My_PCNet")

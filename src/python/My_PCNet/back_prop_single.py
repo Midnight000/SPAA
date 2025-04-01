@@ -242,7 +242,7 @@ def back_prop_single(prj_img, cam_desire, cam_surf):
 
         optimizer.zero_grad()
         loss_diff.backward()
-        vis_valid_fig = plot_montage( torch.cat((ori_desire_test, F.interpolate(opt_input, size=(240, 320), mode='bilinear', align_corners=False), pred), dim=0),
+        vis_valid_fig = plot_montage( torch.cat((ori_desire_test, F.interpolate(opt_input, size=(256, 256), mode='bilinear', align_corners=False), pred), dim=0),
                                     win=vis_valid_fig, title='[Valid]')
         # append_data_point(iters, loss_diff.detach().item(), vis_curve_fig,
         #                 'loss_compennest++')
