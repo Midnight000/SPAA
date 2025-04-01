@@ -1,7 +1,7 @@
 import math
 import os
 
-# import src.python.back_prop_single
+import src.python.back_prop_single
 from src.python.diffusion.metrics.ssim import SSIMScore as SSIM
 import lpips
 import numpy as np
@@ -16,7 +16,7 @@ from src.python.diffusion.guided_diffusion.gaussian_diffusion import _extract_in
 from src.python.diffusion.guided_diffusion.new_scheduler import ddim_timesteps, ddim_repaint_timesteps
 from src.python.diffusion.guided_diffusion.respace import SpacedDiffusion
 from src.python.diffusion.utils.File_Utils import make_dirs
-# import src.python.back_prop_single as compen
+import src.python.back_prop_single as compen
 
 def noise_like(shape, device, repeat=False):
     def repeat_noise():
