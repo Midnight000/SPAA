@@ -1604,6 +1604,8 @@ class Test_DDIMSampler(DDIMSampler):
                             break
                         elif iter > max_iter:
                             lr_xt = 0
+                            new_x = x - lr_xt * (x_grad_L2 * a + x_grad_P + index / 250 * x_grad_LPIPS * b)
+                            break
                         else:
                             lr_xt *= 0.8
                             logging_info(
@@ -1740,7 +1742,7 @@ class Test_DDIMSampler(DDIMSampler):
                     weight_LPIPS=conf["optimize_xt.weight_LPIPS"],
                     weight_SSIM=conf["optimize_xt.weight_SSIM"],
                     setup=setup,
-                    compensate=(True if (index % 10 == 0 and index >= 1000 and conf["compensate"]) else False),
+                    compensate=(True if (index % conf["interval_index"] == 0 and index >= conf["start_index"] and conf["compensate"]) else False),
                 )
                 if conf["overwrite"]:
                     x_t = output["x_prev_overwrite"]

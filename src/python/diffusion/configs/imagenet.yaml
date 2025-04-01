@@ -62,8 +62,8 @@ optimize_xt:
   mid_interval_num: 1
   optimize_before_time_travel: true
   filter_xT: false
-  weight_L2: 0.5
-  weight_LPIPS: 0.5
+  weight_L2: 1
+  weight_LPIPS: 0
   weight_SSIM: 0
 
 repaint:

@@ -100,7 +100,7 @@ def tv_loss(image_tensor):
     return loss
 
 def load_model(model_name, cam_surf, setup_list = None):
-    data_root = abspath(join(os.getcwd(), '../../data'))
+    data_root = abspath(join(os.getcwd(), '../../../data'))
     if setup_list == None:
         print('setup_list=None')
         exit(1)
@@ -109,12 +109,12 @@ def load_model(model_name, cam_surf, setup_list = None):
     # ]
     pcnet_cfg = get_model_train_cfg(['My_PCNet_no_mask'], data_root, setup_list, load_pretrained=True, plot_on=True)
     data_root = pcnet_cfg.data_root
-    cam_mask, mask_corners, setup_info = load_mask_info(data_root, pcnet_cfg.setup_list[0])
+    cam_mask, mask_corners, setup_info = load_mask_info(data_root, pcnet_cfg.setup_list)
     pcnet_cfg.setup_info = setup_info
 
     # stats for different models
     pcnet_cfg.model_name = pcnet_cfg.model_list[0].replace('/', '_')
-    pcnet_cfg.setup_name = pcnet_cfg.setup_list[0].replace('/', '_')
+    pcnet_cfg.setup_name = pcnet_cfg.setup_list.replace('/', '_')
     pcnet_cfg.loss = pcnet_cfg.loss_list[0]
     pcnet_cfg.num_train = pcnet_cfg.num_train_list[0]
 
