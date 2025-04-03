@@ -38,5 +38,5 @@ setup_list = [
 ]
 
 # pcnet_cfg       = get_model_train_cfg(['PCNet'], data_root, setup_list, load_pretrained=False, plot_on=True)
-pcnet_cfg       = get_model_train_cfg(['My_PCNet_no_mask'], data_root, setup_list, center_crop=True, load_pretrained=False, plot_on=True)
+pcnet_cfg       = get_model_train_cfg(['My_PCNet_no_mask'], data_root, setup_list, device_ids=[0], center_crop=True, load_pretrained=False, plot_on=True)
 _, pcnet_ret, _ = train_eval_pcnet(pcnet_cfg)
