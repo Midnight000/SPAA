@@ -9,6 +9,7 @@ torch.backends.cudnn.allow_tf32 = True
 from sklearn.neighbors import NearestNeighbors
 from tqdm import tqdm
 from PIL import Image
+import src.python.back_prop_single as compen
 
 from src.python.diffusion.datasets.utils import normalize
 from src.python.diffusion.datasets import load_lama_celebahq, load_imagenet, load_test
@@ -336,11 +337,21 @@ def main():
 
                     inpainted = normalize_image(result["sample"])
                     samples.append(inpainted.detach().cpu())
-
+                prj_images = []
+                for sample in samples:
+                    cam_desire = sample.clamp(0, 1).to(device)
+                    cam_surf = ((model_kwargs["gt"] + 1) / 2).clamp(0, 1)
+                    _, prj = compen.back_prop_single((torch.ones_like(cam_desire) * 0.309).to(cam_desire.device),
+                                                         cam_desire, cam_surf, setup_list=setup, model_name="My_PCNet")
+                    prj_images.append(prj)
+                prj_images = torch.cat(prj_images)
                 samples = torch.cat(samples)
                 summary_path = os.path.join(config.outdir, setup, str(config.start_index) + '_' + str(config.interval_index), "summary")
+                prj_path = os.path.join(config.outdir, setup,str(config.start_index) + '_' + str(config.interval_index), "prj")
                 os.makedirs(summary_path, exist_ok=True)
+                os.makedirs(prj_path, exist_ok=True)
                 save_grid(samples, os.path.join(summary_path, image_name + '.png'), nrow=batch_size,)
+                save_grid(prj_images, os.path.join(prj_path, image_name + '.png'), nrow=batch_size, )
                 # save images
                 # save gt images
                 save_grid(normalize_image(batch["image"]), os.path.join(outpath, f"gt.png"))

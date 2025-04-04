@@ -1625,7 +1625,7 @@ class Test_DDIMSampler(DDIMSampler):
                 # cam_desire = (((pred_x0 * (1 - mask) + model_kwargs["gt"] * mask) + 1)/2).clamp(0, 1)
                 cam_desire = ((pred_x0 + 1) / 2).clamp(0, 1)
                 cam_surf = ((model_kwargs["gt"] + 1) / 2).clamp(0, 1)
-                cam_desire = compen.back_prop_single((torch.ones_like(cam_desire) * 0.309).to(cam_desire.device),
+                cam_desire, _ = compen.back_prop_single((torch.ones_like(cam_desire) * 0.309).to(cam_desire.device),
                                                      cam_desire, cam_surf, setup_list=setup,model_name="My_PCNet")
                 pred_x0 = (cam_desire * 2 - 1).clamp(-1, 1)
                 directory = model_kwargs["outdir"] + '/reverse/compen' + str(model_kwargs["image_name"] + '_' + str(file_number))

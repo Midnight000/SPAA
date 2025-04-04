@@ -220,7 +220,7 @@ def back_prop_single(prj_img, cam_desire, cam_surf, setup_list = 'DR2', model_na
     del model
     torch.cuda.empty_cache()
     print('-------------------------------------- Done! ---------------------------\n')
-    return pred
+    return pred, opt_input
 
 if __name__ == "__main__":
     transform = transforms.ToTensor()  # 将图片转换为Tensor
