@@ -23,7 +23,8 @@ resume: false # will load previous results if there are some
 mode: inpaint
 debug: false
 missing_info: true
-device: 3
+device: 0
+gpu: 0
 loss: LPIPS
 overwrite: true
 setup_list: pillow1
