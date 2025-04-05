@@ -4,7 +4,7 @@ import os
 import random
 
 parser = argparse.ArgumentParser(description="示例：Python 脚本参数")
-parser.add_argument('--device', nargs='+', type=int, default=[0], help="指定使用的 GPU 设备列表，如 0 1 2")
+parser.add_argument('--gpu', nargs='+', type=int, default=[0], help="指定使用的 GPU 设备列表，如 0 1 2")
 args, _ = parser.parse_known_args()
 gpu_list = ",".join(map(str, args.device))  # 转换为字符串 "0,1,2"
 os.environ['CUDA_VISIBLE_DEVICES'] = gpu_list
@@ -142,7 +142,7 @@ def main():
     ###################################################################################
     config = Config(default_config_file="configs/imagenet.yaml", use_argparse=True)
     config.show()
-    torch.cuda.set_device(config.device)
+    torch.cuda.set_device(0)
 
     all_paths = get_all_paths(config.outdir)
     config.dump(all_paths["path_config"])
