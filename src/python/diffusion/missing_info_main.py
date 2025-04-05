@@ -1,6 +1,13 @@
+import argparse
 import logging
 import os
 import random
+
+parser = argparse.ArgumentParser(description="示例：Python 脚本参数")
+parser.add_argument('--device', nargs='+', type=int, default=[0], help="指定使用的 GPU 设备列表，如 0 1 2")
+args = parser.parse_args()
+gpu_list = ",".join(map(str, args.device))  # 转换为字符串 "0,1,2"
+os.environ['CUDA_VISIBLE_DEVICES'] = gpu_list
 
 import numpy as np
 import torch
